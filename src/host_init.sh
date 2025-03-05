@@ -16,13 +16,37 @@ sudo mkdir -p /mnt/efs
 sudo chmod 777 /mnt/efs
 if [[ ${MODE} == "oem_packages" ]]; then
     echo "Mode set to oem_packages. Setting EFS to read-only."
-    sudo mount -t lustre -r -o relatime,flock $EFS /mnt/efs
+    sudo mount -t lustre -r -o relatime,flock "${EFS}" /mnt/efs
 else
-    sudo mount -t lustre -o relatime,flock $EFS /mnt/efs
+    sudo mount -t lustre -o relatime,flock "${EFS}" /mnt/efs
 fi
 
 # Make sure it is mounted before end script
 sleep 10s
+
+create_dir() {
+    main_DIR=$1
+    new_DIR=$2
+    
+    if [ ! -d "${main_DIR}/${new_DIR}" ]; then
+        sudo mkdir -p "${main_DIR}/${new_DIR}"
+        sudo chown -R mmc "${main_DIR}/${new_DIR}"
+        sudo chmod -R 777 "${main_DIR}/${new_DIR}"
+        sudo chgrp -R users "${main_DIR}/${new_DIR}"
+    fi
+}
+
+create_file() {
+    main_DIR=$1
+    new_FILE=$2
+    
+    if [ ! -f "${main_DIR}/${new_FILE}" ]; then
+        sudo touch "${main_DIR}/${new_FILE}"
+        sudo chown mmc "${main_DIR}/${new_FILE}"
+        sudo chmod 777 "${main_DIR}/${new_FILE}"
+        sudo chgrp users "${main_DIR}/${new_FILE}"
+    fi
+}
 
 # Make the directories if it does not exist already
 # These can be made regardless of the mode
@@ -31,142 +55,55 @@ sleep 10s
 make_directories() {
     main_DIR=$1
 
-    if [ ! -d "$main_PATH/" ]; then
-        sudo mkdir -p $main_DIR
-        sudo chown -R mmc $main_DIR
-        sudo chmod -R 777 $main_DIR
-        sudo chgrp -R users $main_DIR
-    fi
-    if [ ! -d "$main_DIR/.pixi" ]; then
-        sudo mkdir -p $main_DIR/.pixi
-        sudo chown -R mmc $main_DIR/.pixi
-        sudo chmod -R 777 $main_DIR/.pixi
-        sudo chgrp -R users $main_DIR/.pixi
+    if [ ! -d "${main_DIR}/" ]; then
+        sudo mkdir -p "${main_DIR}"
+        sudo chown -R mmc "${main_DIR}"
+        sudo chmod -R 777 "${main_DIR}"
+        sudo chgrp -R users "${main_DIR}"
     fi
 
-    if [ ! -d "$main_DIR/micromamba" ]; then
-        sudo mkdir -p $main_DIR/micromamba
-        sudo chown -R mmc $main_DIR/micromamba
-        sudo chmod -R 777 $main_DIR/micromamba
-        sudo chgrp -R users $main_DIR/micromamba
-    fi
+    # ".conda"
+    # ".mamba"
+    new_DIRS=(
+        ".cache"
+        ".config"
+        ".ipython"
+        ".jupyter"
+        ".local"
+        ".mamba"
+        ".pixi"
+        "ghq"
+        "micromamba"
+    )
 
-    if [ ! -d "$main_DIR/.config" ]; then
-        sudo mkdir -p $main_DIR/.config
-        sudo chown -R mmc $main_DIR/.config
-        sudo chmod -R 777 $main_DIR/.config
-        sudo chgrp -R users $main_DIR/.config
-    fi
+    for new_DIR in "${new_DIRS[@]}"; do
+        create_dir "${main_DIR}" "${new_DIR}"
+    done
 
-    if [ ! -d "$main_DIR/.cache" ]; then
-        sudo mkdir -p $main_DIR/.cache
-        sudo chown -R mmc $main_DIR/.cache
-        sudo chmod -R 777 $main_DIR/.cache
-        sudo chgrp -R users $main_DIR/.cache
-    fi
+    new_FILES=(
+        ".bashrc"
+        ".condarc"
+        ".mambarc"
+        ".profile"
+    )
 
-    if [ ! -d "$main_DIR/.conda" ]; then
-        sudo mkdir -p $main_DIR/.conda
-        sudo chown -R mmc $main_DIR/.conda
-        sudo chmod -R 777 $main_DIR/.conda
-        sudo chgrp -R users $main_DIR/.conda
-    fi
-
-    if [ ! -f "$main_DIR/.condarc" ]; then
-        # A file, not a directory
-        sudo touch $main_DIR/.condarc
-        sudo chown mmc $main_DIR/.condarc
-        sudo chmod 777 $main_DIR/.condarc
-        sudo chgrp users $main_DIR/.condarc
-    fi
-
-    if [ ! -d "$main_DIR/.ipython" ]; then
-        sudo mkdir -p $main_DIR/.ipython
-        sudo chown -R mmc $main_DIR/.ipython
-        sudo chmod -R 777 $main_DIR/.ipython
-        sudo chgrp -R users $main_DIR/.ipython
-    fi
-
-    if [ ! -d "$main_DIR/.jupyter" ]; then
-        sudo mkdir -p $main_DIR/.jupyter
-        sudo chown -R mmc $main_DIR/.jupyter
-        sudo chmod -R 777 $main_DIR/.jupyter
-        sudo chgrp -R users $main_DIR/.jupyter
-    fi
-
-    if [ ! -d "$main_DIR/.local" ]; then
-        sudo mkdir -p $main_DIR/.local
-        sudo chown -R mmc $main_DIR/.local
-        sudo chmod -R 777 $main_DIR/.local
-        sudo chgrp -R users $main_DIR/.local
-    fi
-
-    if [ ! -d "$main_DIR/.mamba/pkgs" ]; then
-        sudo mkdir -p $main_DIR/.mamba/pkgs
-        sudo chown -R mmc $main_DIR/.mamba
-        sudo chmod -R 777 $main_DIR/.mamba
-        sudo chgrp -R users $main_DIR/.mamba
-    fi
-
-    if [ ! -f "$main_DIR/.mambarc" ]; then
-        # A file, not a directory
-        sudo touch $main_DIR/.mambarc
-        sudo chown mmc $main_DIR/.mambarc
-        sudo chmod 777 $main_DIR/.mambarc
-        sudo chgrp users $main_DIR/.mambarc
-    fi
-
-    # For Github setup
-    if [ ! -d "$main_DIR/ghq" ]; then
-        sudo mkdir -p $main_DIR/ghq
-        sudo chown -R mmc $main_DIR/ghq
-        sudo chmod -R 777 $main_DIR/ghq
-        sudo chgrp -R users $main_DIR/ghq
-    fi
-
-    # Create .bashrc and .profile files
-    if [ ! -f "$main_DIR/.bashrc" ]; then
-        sudo touch $main_DIR/.bashrc
-    fi
-    if [ ! -f "$main_DIR/.profile" ]; then
-        # Since .profile file will not change per mode, we can edit it here
-        sudo touch $main_DIR/.profile
-        tee ${efs_path}/.profile << EOF
-# if running bash
-if [ -n "\$BASH_VERSION" ]; then
-# include .bashrc if it exists
-if [ -f "\$HOME/.bashrc" ]; then
-. "\$HOME/.bashrc"
-fi
-fi
-EOF
-    fi
-
-    # For bashrc and profile, if they do exist, make sure they have the right permissions
-    if [ -f "$main_DIR/.bashrc" ]; then
-        sudo chown mmc $main_DIR/.bashrc
-        sudo chmod 777 $main_DIR/.bashrc
-        sudo chgrp users $main_DIR/.bashrc
-    fi
-    if [ -f "$main_DIR/.profile" ]; then
-        sudo chown mmc $main_DIR/.profile
-        sudo chmod 777 $main_DIR/.profile
-        sudo chgrp users $main_DIR/.profile
-    fi
+    for new_FILE in "${new_FILES[@]}"; do
+        create_dir "${main_DIR}" "${new_FILE}"
+    done
 }
 
 # NOTE: Even if oem_packages does not need user directories, they are only made if they do not exist
 # and will not be used anyway
 # The same goes for shared directories for mount_packages
 make_directories /mnt/efs/shared
-make_directories /mnt/efs/$FLOAT_USER
+make_directories "/mnt/efs/${FLOAT_USER}"
 
 # This section will rename the files under /opt/share/.pixi/bin/trampoline_configuration to point to the right location
 # This is so non-admin users will be able to use shared packages
 # Will run at the creation of any interactive job
-for file in /mnt/efs/shared/.pixi/bin/trampoline_configuration/*.json; do
-    sed -i 's|/home/ubuntu/.pixi|/mnt/efs/shared/.pixi|g' "$file"
-done
+# for file in /mnt/efs/shared/.pixi/bin/trampoline_configuration/*.json; do
+#     sed -i 's|/home/ubuntu/.pixi|/mnt/efs/shared/.pixi|g' "$file"
+# done
 
 ######## SECTION ON JUPYTER SUSPENSION ########
 if [[ $SUSPEND_FEATURE == "" ]] && { [[ $VMUI == "jupyter" ]] || [[ $VMUI == "jupyter-lab" ]]; }; then
@@ -175,12 +112,12 @@ if [[ $SUSPEND_FEATURE == "" ]] && { [[ $VMUI == "jupyter" ]] || [[ $VMUI == "ju
 
     # Use nohup to run the Python script in the background
     # Grabbing job id of the job
-    job_id=$(echo $FLOAT_JOB_ID)
+    job_id="${FLOAT_JOB_ID}"
     splitted="${job_id:0:2}/${job_id:2:2}/${job_id:4}"
     BASE_PATH="/mnt/memverge/slurm/work/$splitted"
 
     echo "BASEPATH: $BASE_PATH"
-    nohup python3 - << 'EOF' > $BASE_PATH/python_output.log 2>&1 &
+    nohup python3 - << 'EOF' > "${BASE_PATH}/python_output.log" 2>&1 &
 
 import subprocess
 import sys
