@@ -1,119 +1,103 @@
 #!/bin/bash
 username=$(whoami)
-cd /home/$username
+cd "/home/${username}"
 
 link_paths() {
-  efs_path=$1
-  local_path=$2
-  paths=$3
-
-  # Do not symlink if paths is none (only for oem_packages)
-  if [[ ${paths} != "none" ]]; then
-    ln -s ${efs_path}/.pixi ${local_path}/.pixi
-    ln -s ${efs_path}/micromamba ${local_path}/micromamba
+    efs_path=$1
+    local_path=$2
 
     # To link .bashrc and .profile, need to remove the original (not for oem_packages)
-    rm ${local_path}/.bashrc ${local_path}/.profile
-    ln -s ${efs_path}/.bashrc ${local_path}/.bashrc
-    ln -s ${efs_path}/.profile ${local_path}/.profile
-  fi
+    rm "${local_path}/.bashrc" "${local_path}/.profile"
+    ln -s "${efs_path}/.bashrc" "${local_path}/.bashrc"
+    ln -s "${efs_path}/.profile" "${local_path}/.profile"
 
-  # If we are mountng "full" paths, link all of the directories with config files
-  # This is for mount_packages and oem_mount_packages
-  if [[ ${paths} == "full" ]]; then
-      # We probably don't need this first line any more - need to check
-      echo 'default_channels = ["dnachun", "conda-forge", "bioconda"]' > ${local_path}/.pixi/config.toml
-      ln -s ${efs_path}/.config ${local_path}/.config
-      ln -s ${efs_path}/.cache ${local_path}/.cache
-      ln -s ${efs_path}/.conda ${local_path}/.conda
-      ln -s ${efs_path}/.condarc ${local_path}/.condarc
-      ln -s ${efs_path}/.ipython ${local_path}/.ipython
-      ln -s ${efs_path}/.jupyter ${local_path}/.jupyter
-      ln -s ${efs_path}/.mamba ${local_path}/.mamba
-      ln -s ${efs_path}/.local ${local_path}/.local
-      ln -s ${efs_path}/.mambarc ${local_path}/.mambarc
-      ln -s ${efs_path}/ghq ${local_path}/ghq
-  fi
+    # conda config files
+    ln -s "${efs_path}/.condarc" "${local_path}/.condarc"
+    ln -s "${efs_path}/.mambarc" "${local_path}/.mambarc"
 
-  # After installing pixi, it adds the local dir to the PATH through the .bashrc
-  # Because we do not want multiple $HOME to front of PATH
-  # We need to make a new .bashrc every time.
-  echo -e "Making new .bashrc...\n"
-  tee ${efs_path}/.bashrc << EOF
+    # jupyter config files
+    ln -s "${efs_path}/.jupyter" "${local_path}/.jupyter"
+
+    # code-server config files
+    mkdir -p "${local_path}/.local/share"
+    ln -s "${efs_path}/.local/share/code-server" "${local_path}/.local/share/code-server"
+
+    # other config files
+    ln -s "${efs_path}/.config" "${local_path}/.config"
+
+    # Only link these directories when not in oem_packages mode
+    if [[ ${MODE} != "oem_packages" ]]; then
+        # Software folders
+        ln -s "${efs_path}/.pixi" "${local_path}/.pixi"
+        ln -s "${efs_path}/micromamba" "${local_path}/micromamba"
+
+        # Ipython folder
+        ln -s "${efs_path}/.ipython" "${local_path}/.ipython"
+
+        # Cache
+        ln -s "${efs_path}/.cache" "${local_path}/.cache"
+
+        # After installing pixi, it adds the local dir to the PATH through the .bashrc
+        # Because we do not want multiple $HOME to front of PATH
+        # We need to make a new .bashrc and .profile every time.
+        echo -e "Making new .bashrc...\n"
+        tee "${efs_path}/.bashrc" << EOF
 source \$HOME/.set_paths
 unset PYTHONPATH
-export PYDEVD_DISABLE_FILE_VALIDATION=1
 EOF
+        echo -e "Making new .profile...\n"
+        tee "${efs_path}/.profile" << EOF
+# if running bash
+if [ -n "\$BASH_VERSION" ]; then
+# include .bashrc if it exists
+if [ -f "\$HOME/.bashrc" ]; then
+. "\$HOME/.bashrc"
+fi
+fi
+EOF
+    fi
+
+    if [[ ${MODE} != "oem_packages" ]]; then
+        # Git repositories
+        ln -s "${efs_path}/ghq" "${local_path}/ghq"
+    fi
+
+    # ln -s ${efs_path}/.mamba ${local_path}/.mamba
+    # ln -s ${efs_path}/.conda ${local_path}/.conda
+
 }
 
 set_paths() {
-  efs_path=$1
-  mode=$2
+    efs_path=$1
 
-  # Create a PATH script - does not need to be saved in EFS
-  # (new every time for easy editing)
-  if [[ ${mode} == "mount_packages" ]]; then
-    # mount_packages will not use shared packages, so no need to add /mnt/efs/shared/.pixi/bin to PATH
-    tee ${HOME}/.set_paths << EOF
-export PATH="\${HOME}/.pixi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    # Create a PATH script - does not need to be saved in EFS
+    # (new every time for easy editing)
+    tee "${HOME}/.set_paths" << EOF
+export PATH="${efs_path}/.pixi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EOF
-  else
-    # For all other modes, to avoid potential conflicts between user installed packages in their home folder (whether it's saved to EFS or not)
-    # We set the HOME path before the shared path
-    tee ${HOME}/.set_paths << EOF 
-export PATH="\${HOME}/.pixi/bin:/mnt/efs/shared/.pixi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-EOF
-  fi
-  # --- This section is mainly for updating the .bashrc ---
-  # --- When previous versions used /opt/shared instead of /mnt/efs/shared ---
-  # Update bashrc to remove /opt/shared and replace with /mnt/efs/shared
-  if grep -Fxq 'export PATH="/opt/shared/.pixi/bin:${PATH}"' ~/.bashrc; then
-      echo "/opt/shared exists in .bashrc. Updating the path..."
-      sed -i 's|/opt/shared|/mnt/efs/shared|g' ~/.bashrc
-      echo "Path updated to use /mnt/efs/shared."
-  fi
-  # ---------------------------------------------------------------------------
 
-  source $efs_path/.bashrc
-  echo "PATH: $PATH"
+    source "${efs_path}/.bashrc"
+    echo "PATH: ${PATH}"
 }
 
 # Link necessary dirs and files
 # The efs_path, or first parameter in link_paths and set_paths, is the location of their .bashrc
-if [[ ${MODE} == "shared_admin" ]]; then
-  # For updating shared packages
-  link_paths /mnt/efs/shared /home/${username} full
-  set_paths /mnt/efs/shared shared_admin
-elif [[ ${MODE} == "oem_packages" ]]; then
-  # Can access shared packages but NOT user packages. Can install packages locally
-  link_paths /mnt/efs/shared /home/${username} none
-  set_paths /mnt/efs/shared oem_packages
+if [[ ${MODE} == "oem_admin" ]] || [[ ${MODE} == "oem_packages" ]]; then
+    # For updating shared packages
+    link_paths /mnt/efs/shared "/home/${username}"
+    set_paths /mnt/efs/shared
 elif [[ ${MODE} == "mount_packages" ]]; then
-  # Can NOT access shared packages, but can see user packages. Can install user packages on EFS
-  link_paths /mnt/efs/${FLOAT_USER} /home/${username} full
-  set_paths /mnt/efs/${FLOAT_USER} mount_packages
-elif [[ ${MODE} == "oem_mount_packages" ]]; then
-  # Can access shared and user packages in the EFS. Can install user packages on EFS
-  link_paths /mnt/efs/${FLOAT_USER} /home/${username} full
-  set_paths /mnt/efs/${FLOAT_USER} oem_mount_packages
+    # Can NOT access shared packages, but can see user packages. Can install user packages on EFS
+    link_paths "/mnt/efs/${FLOAT_USER}" "/home/${username}"
+    set_paths "/mnt/efs/${FLOAT_USER}"
 else
-  echo -e "ERROR: invalid mode specified - must be one of oem_admin, shared_admin or user"
-  exit 1
+    echo -e "ERROR: invalid mode specified - must be one of oem_admin, oem_packages or mount_packages"
+    exit 1
 fi
-
-# Update channel config file if it does not exist already
-if [ ! -d "${HOME}/.pixi" ] && [ ! -f "${HOME}/.pixi/config.toml" ]; then
-  mkdir -p ${HOME}/.pixi && echo 'default_channels = ["dnachun", "conda-forge", "bioconda"]' > ${HOME}/.pixi/config.toml
-fi
-
-# init.sh run after it is updated
-curl -O https://raw.githubusercontent.com/gaow/misc/refs/heads/master/bash/pixi/init.sh
-chmod +x init.sh
-./init.sh
 
 # Run entrypoint if given
-if [[ ! -z "$ENTRYPOINT" ]]; then
-    curl -fsSL ${ENTRYPOINT} | bash
+if [[ -n "$ENTRYPOINT" ]]; then
+    curl -fsSL "${ENTRYPOINT}" | bash
 else
 # Else run original VMUI check
   is_available() {
@@ -135,10 +119,13 @@ else
 
   # Check the value of VMUI and start the corresponding UI
   case "${VMUI}" in
+    batch )
+        echo "Running batch job, no IDE will be started" ;;
     jupyter|jupyter-lab)
       if is_available jupyter-lab; then
         echo "[$(date)]: JupyterLab is available. Starting JupyterLab ..."
         while true; do
+            export JUPYTER_CONFIG_DIR=$HOME/.jupyter
             jupyter-lab
             # Check if jupyter-lab exited with a non-zero exit code
             if [ $? -ne 0 ]; then
@@ -187,5 +174,4 @@ else
       start_terminal_server
       ;;
   esac
-
 fi
