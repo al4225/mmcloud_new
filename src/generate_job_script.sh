@@ -174,9 +174,11 @@ tee \${cmd_script} >/dev/null << ${eof}
 $(sed '/^\s*$/d' "${script_file}" | sed -n "${start},${end}p")
 ${eof}
 
-if [[ \$num_parallel_commands -gt 1 && \$(wc -l \${cmd_script}) -gt 1 ]]; then
+if [[ \$num_parallel_commands -gt 1 && \$(wc -l < \${cmd_script}) -gt 1 ]]; then
+    echo "Running \$num_parallel_commands commands in parallel for \$(wc -l < \${cmd_script}) total commands."
     parallel -j \$num_parallel_commands ${no_fail_parallel} < \${cmd_script}
 else
+    echo "Running \$(wc -l < \${cmd_script}) commands in serial"
     bash \${cmd_script} ${no_fail}
 fi
 
