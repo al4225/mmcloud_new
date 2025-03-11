@@ -176,7 +176,7 @@ ${eof}
 
 if [[ \$num_parallel_commands -gt 1 && \$(wc -l < \${cmd_script}) -gt 1 ]]; then
     echo "Running \$num_parallel_commands commands in parallel for \$(wc -l < \${cmd_script}) total commands."
-    parallel -j \$num_parallel_commands ${no_fail_parallel} < \${cmd_script}
+    cat \${cmd_script} | parallel -j \$num_parallel_commands ${no_fail_parallel}
 else
     echo "Running \$(wc -l < \${cmd_script}) commands in serial"
     bash \${cmd_script} ${no_fail}
