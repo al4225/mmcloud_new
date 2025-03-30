@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """
 S3 Direct File Operations - For copying, moving, or deleting direct files in S3 folders
-Copyright 2025 Achyutha Harish, MemVerge Inc.
-With edits from Gao Wang via claude.ai
+Origincally created by Achyutha Harish, MemVerge Inc.
+With heavy edits from Gao Wang via claude.ai
 """
-
 import boto3
 import argparse
 import os
@@ -44,6 +43,18 @@ class S3DirectOps:
         elif pattern_type == 'exact':
             return filename == pattern
         return fnmatch.fnmatch(filename, pattern)
+    
+    def check_prefix_exists(self, bucket, prefix):
+        """Check if a prefix exists in the bucket (without creating it)."""
+        norm_prefix = self.normalize_prefix(prefix)
+        
+        try:
+            # Check if prefix exists by listing objects
+            resp = s3.list_objects_v2(Bucket=bucket, Prefix=norm_prefix, MaxKeys=1)
+            return 'Contents' in resp or 'CommonPrefixes' in resp
+        except ClientError as e:
+            print(f"Error checking prefix '{prefix}': {e}")
+            return False
     
     def check_and_create_folder(self, bucket, prefix):
         """Check if a bucket/prefix exists, create if needed."""
@@ -151,15 +162,7 @@ class S3DirectOps:
                     Bucket=dest_bucket, 
                     Key=dest_key, 
                     CopySource={'Bucket': source_bucket, 'Key': source_key},
-                    MetadataDirective='REPLACE',
-                    ContentType=metadata.get('ContentType', 'binary/octet-stream'),
-                    Metadata=metadata.get('Metadata', {}),
-                    CacheControl=metadata.get('CacheControl', ''),
-                    ContentDisposition=metadata.get('ContentDisposition', ''),
-                    ContentEncoding=metadata.get('ContentEncoding', ''),
-                    ContentLanguage=metadata.get('ContentLanguage', ''),
-                    # Preserve the LastModified timestamp 
-                    # S3 automatically preserves the timestamp when using METADATA_DIRECTIVE=COPY (default)
+                    MetadataDirective='COPY'  # Preserve all metadata including timestamps
                 )
                 return True
             else:
@@ -185,9 +188,6 @@ class S3DirectOps:
                 version_id = version.get('VersionId')
                 size = version.get('Size', 0)
                 
-                # Get metadata to preserve timestamps
-                metadata = self.get_object_metadata(source_bucket, source_key, version_id)
-                
                 copy_source = {
                     'Bucket': source_bucket,
                     'Key': source_key,
@@ -197,7 +197,7 @@ class S3DirectOps:
                 if size > MAX_DIRECT_COPY_SIZE:
                     # Use multipart copy for large files
                     print(f"Large file detected: {source_key} (v:{version_id})")
-                    self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key, metadata)
+                    self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key)
                 else:
                     # Standard copy for regular files
                     print(f"Copying {source_key} (v:{version_id}) → {dest_key}")
@@ -353,10 +353,6 @@ class S3DirectOps:
             if not dest_bucket or not dest_prefix:
                 print("Error: Destination bucket and prefix required for copy/move operations")
                 return False
-                
-            if not self.check_and_create_folder(dest_bucket, dest_prefix):
-                print(f"Error: Could not access or create destination {dest_bucket}/{dest_prefix}")
-                return False
         
         # Get matching files
         matched_files = self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
@@ -371,6 +367,28 @@ class S3DirectOps:
                 print("Operation cancelled.")
                 return False
         
+        # Check if destination exists - treats differently for rename vs. move
+        dest_exists = False
+        if operation in ['copy', 'move']:
+            dest_exists = self.check_prefix_exists(dest_bucket, dest_prefix)
+            
+            # Create destination if it doesn't exist
+            if not self.check_and_create_folder(dest_bucket, dest_prefix):
+                print(f"Error: Could not access or create destination {dest_bucket}/{dest_prefix}")
+                return False
+                
+            # Log the operation type
+            if dest_exists:
+                if merge:
+                    print(f"Performing {operation} with merge (files will go directly to destination)")
+                else:
+                    print(f"Performing {operation} to existing destination (preserving folder structure)")
+            else:
+                if pattern:
+                    print(f"Performing {operation} with pattern (directly to new destination)")
+                else:
+                    print(f"Performing rename operation (source folder to new destination)")
+        
         # Process operations
         success_count = 0
         failed_count = 0
@@ -379,8 +397,12 @@ class S3DirectOps:
             source_key = file['Key']
             file_name = file['Name']
             
-            # When pattern is specified, ALWAYS use direct paths (merge behavior)
-            use_merge = merge or (pattern is not None)
+            # Determine path handling mode:
+            # 1. If --merge flag is explicitly given, always merge
+            # 2. If pattern is specified, always merge
+            # 3. If destination does not exist (like a rename), create it directly without subfolder
+            # 4. If destination exists, preserve structure with subfolder
+            use_merge = merge or (pattern is not None) or (not dest_exists and operation == 'move')
             
             # Perform the operation
             if operation == 'delete':
@@ -413,13 +435,19 @@ class S3DirectOps:
             else:
                 failed_count += 1
         
+        # Create completion message
         version_str = "current versions only" if current_version_only else "all versions"
+        
         if pattern:
-            merge_str = "directly to destination"
+            path_str = "directly to destination"
+        elif not dest_exists and operation == 'move':
+            path_str = "rename operation"
+        elif merge:
+            path_str = "merged into destination"
         else:
-            merge_str = "merged into destination" if merge else "preserving folder structure"
+            path_str = "preserving folder structure"
             
-        print(f"{operation.capitalize()} operation completed ({version_str}, {merge_str}): {success_count} files processed, {failed_count} failed")
+        print(f"{operation.capitalize()} operation completed ({version_str}, {path_str}): {success_count} files processed, {failed_count} failed")
         return failed_count == 0
 
 def parse_args():
