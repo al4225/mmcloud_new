@@ -27,6 +27,11 @@ class S3DirectOps:
         return prefix.lstrip('/').rstrip('/') + '/'
     
     @staticmethod
+    def get_basename(path):
+        """Get the base name (last component) of a path."""
+        return os.path.basename(path.rstrip('/'))
+    
+    @staticmethod
     def match_pattern(filename, pattern, pattern_type):
         """Match a filename against a pattern."""
         if not pattern:
@@ -279,7 +284,8 @@ class S3DirectOps:
             return False
     
     def process_files(self, operation, source_bucket, source_prefix, dest_bucket=None, 
-                     dest_prefix=None, pattern=None, pattern_type=None, current_version_only=False):
+                     dest_prefix=None, pattern=None, pattern_type=None, current_version_only=False,
+                     merge=False):
         """Process files with given operation (copy/move/delete/list)."""
         # For list operation, just return the matched files
         if operation == 'list':
@@ -308,6 +314,9 @@ class S3DirectOps:
                 print("Operation cancelled.")
                 return False
         
+        # Get source folder basename for path construction
+        source_base = self.get_basename(source_prefix)
+        
         # Process operations
         success_count = 0
         failed_count = 0
@@ -321,7 +330,16 @@ class S3DirectOps:
                 success = self.delete_file(source_bucket, source_key, current_version_only)
             elif operation in ['copy', 'move']:
                 # Calculate destination path
-                dest_key = f"{self.normalize_prefix(dest_prefix)}{file_name}"
+                if merge:
+                    # When merging, files go directly to the destination folder
+                    dest_key = f"{self.normalize_prefix(dest_prefix)}{file_name}"
+                else:
+                    # When preserving structure, files go to a subfolder named after the source folder
+                    dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
+                    dest_key = f"{dest_subfolder}/{file_name}"
+                    
+                    # Ensure the subfolder exists
+                    self.check_and_create_folder(dest_bucket, dest_subfolder)
                 
                 # Copy the file
                 success = self.copy_file(source_bucket, source_key, dest_bucket, dest_key, current_version_only)
@@ -338,7 +356,8 @@ class S3DirectOps:
                 failed_count += 1
         
         version_str = "current versions only" if current_version_only else "all versions"
-        print(f"{operation.capitalize()} operation completed ({version_str}): {success_count} files processed, {failed_count} failed")
+        merge_str = "merged into destination" if merge else "preserving folder structure"
+        print(f"{operation.capitalize()} operation completed ({version_str}, {merge_str}): {success_count} files processed, {failed_count} failed")
         return failed_count == 0
 
 def parse_args():
@@ -362,6 +381,11 @@ def parse_args():
     version_group.add_argument('--current-version-only', action='store_true',
                             help="Only operate on current versions (ignore history)")
     
+    # Path structure options
+    path_group = parser.add_argument_group('Path handling')
+    path_group.add_argument('--merge', action='store_true',
+                         help="Merge files directly into destination (don't preserve source folder)")
+    
     return parser.parse_args()
 
 def main():
@@ -382,7 +406,8 @@ def main():
             args.dest_prefix,
             args.pattern,
             args.pattern_type,
-            args.current_version_only
+            args.current_version_only,
+            args.merge
         )
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
