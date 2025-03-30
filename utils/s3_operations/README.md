@@ -18,7 +18,7 @@ This is useful when working with versioned S3 buckets where standard `aws s3 cp`
 ## Requirements
 
 - Python 3.6 or higher
-- `boto3` library (`pip install boto3`)
+- `boto3` library (`pip install boto3`, or for those using StatFunGen Lab default setup, `pixi global install --environment python boto3`)
 - AWS credentials configured via AWS CLI or environment variables
 
 ## Usage
