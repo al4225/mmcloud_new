@@ -12,6 +12,7 @@ import fnmatch
 import re
 from botocore.exceptions import ClientError
 import datetime
+import time
 
 # Initialize S3 client with extended timeout
 s3 = boto3.client('s3', config=boto3.session.Config(connect_timeout=60, read_timeout=60))
@@ -142,23 +143,58 @@ class S3DirectOps:
         except ClientError as e:
             print(f"Error getting timestamp for {key}: {e}")
             return None
+    
+    def restore_timestamp(self, bucket, key, timestamp):
+        """Restore the original timestamp of a file using S3 copy."""
+        try:
+            # Create a temporary copy with the same content
+            temp_key = f"{key}-temp-{int(time.time())}"
+            s3.copy_object(
+                Bucket=bucket,
+                Key=temp_key,
+                CopySource=f"{bucket}/{key}",
+                MetadataDirective='COPY'
+            )
+            
+            # Convert timestamp to string format required by boto3
+            timestamp_str = timestamp.strftime('%a, %d %b %Y %H:%M:%S GMT')
+            
+            # Copy the object back with the original timestamp
+            s3.copy_object(
+                Bucket=bucket,
+                Key=key,
+                CopySource=f"{bucket}/{temp_key}",
+                MetadataDirective='REPLACE',
+                Metadata={'original-last-modified': timestamp.isoformat()},
+                CopySourceIfModifiedSince=timestamp_str
+            )
+            
+            # Delete the temporary object
+            s3.delete_object(Bucket=bucket, Key=temp_key)
+            
+            print(f"  Restored timestamp for {key} to {timestamp}")
+            return True
+        except ClientError as e:
+            print(f"Error restoring timestamp for {key}: {e}")
+            return False
             
     def copy_file(self, source_bucket, source_key, dest_bucket, dest_key, current_version_only=False):
-        """Copy a file with timestamp preservation in metadata for current version."""
+        """Copy a file with timestamp preservation for current version."""
         try:
+            # Get the original file's timestamp and metadata regardless of current_version_only flag
+            original_resp = s3.head_object(Bucket=source_bucket, Key=source_key)
+            original_timestamp = original_resp.get('LastModified')
+            size = original_resp['ContentLength']
+            
+            if not original_timestamp:
+                print(f"Warning: Could not get timestamp for {source_key}")
+            
+            # Prepare metadata with the original timestamp
+            existing_metadata = original_resp.get('Metadata', {})
+            new_metadata = {**existing_metadata, 'original-last-modified': original_timestamp.isoformat()}
+            
             if current_version_only:
-                # Get the original file's timestamp and metadata
-                original_resp = s3.head_object(Bucket=source_bucket, Key=source_key)
-                original_timestamp = original_resp.get('LastModified')
-                if not original_timestamp:
-                    print(f"Warning: Could not get timestamp for {source_key}")
-                
-                # Prepare metadata with the original timestamp
-                existing_metadata = original_resp.get('Metadata', {})
-                new_metadata = {**existing_metadata, 'original-last-modified': original_timestamp.isoformat()}
-                
-                # Check file size for direct or multipart copy
-                size = original_resp['ContentLength']
+                # Copy only the current version with metadata
                 if size > MAX_DIRECT_COPY_SIZE:
                     print(f"Large file detected: {source_key} (current version)")
                     self._multipart_copy(source_bucket, source_key, None, dest_bucket, dest_key, new_metadata)
@@ -172,35 +208,69 @@ class S3DirectOps:
                         MetadataDirective='REPLACE'
                     )
                 
+                # Attempt to restore the original timestamp
+                if original_timestamp:
+                    self.restore_timestamp(dest_bucket, dest_key, original_timestamp)
+                
                 # For debugging: Compare timestamps
                 after_copy_timestamp = self.get_file_timestamp(dest_bucket, dest_key)
                 if original_timestamp and after_copy_timestamp:
                     print(f"  Original timestamp: {original_timestamp}")
                     print(f"  New timestamp:      {after_copy_timestamp}")
-                    print(f"  Original timestamp preserved in metadata as 'original-last-modified'")
-                    if original_timestamp.timestamp() != after_copy_timestamp.timestamp():
-                        print(f"  Note: 'LastModified' timestamp updated by S3, use metadata for original time")
-                
+                    
                 return True
             else:
+                # Copy all versions but still preserve timestamp for current version
                 print(f"Copying all versions of {source_key} → {dest_key}")
                 response = s3.list_object_versions(Bucket=source_bucket, Prefix=source_key)
                 versions = [v for v in response.get('Versions', []) if v.get('Key') == source_key]
+                
                 if not versions:
                     print(f"Warning: No versions found for {source_key}")
                     return False
+                
+                # Find the current (non-deleted) version
+                current_version = next((v for v in versions if not v.get('IsDeleted', False)), None)
+                
+                # Copy all versions
                 for version in versions:
                     version_id = version.get('VersionId')
+                    is_current = current_version and version_id == current_version.get('VersionId')
                     size = version.get('Size', 0)
+                    
                     if size > MAX_DIRECT_COPY_SIZE:
                         print(f"Large file detected: {source_key} (v:{version_id})")
-                        self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key)
+                        # Use metadata only for current version
+                        metadata_to_use = new_metadata if is_current else None
+                        self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key, metadata_to_use)
                     else:
-                        s3.copy_object(
-                            Bucket=dest_bucket,
-                            Key=dest_key,
-                            CopySource=f"{source_bucket}/{source_key}?versionId={version_id}"
-                        )
+                        if is_current:
+                            # Add metadata for current version
+                            s3.copy_object(
+                                Bucket=dest_bucket,
+                                Key=dest_key,
+                                CopySource=f"{source_bucket}/{source_key}?versionId={version_id}",
+                                Metadata=new_metadata,
+                                MetadataDirective='REPLACE'
+                            )
+                        else:
+                            # Regular copy for other versions
+                            s3.copy_object(
+                                Bucket=dest_bucket,
+                                Key=dest_key,
+                                CopySource=f"{source_bucket}/{source_key}?versionId={version_id}"
+                            )
+                
+                # Attempt to restore the original timestamp for current version
+                if original_timestamp:
+                    self.restore_timestamp(dest_bucket, dest_key, original_timestamp)
+                
+                # For debugging: Compare timestamps
+                after_copy_timestamp = self.get_file_timestamp(dest_bucket, dest_key)
+                if original_timestamp and after_copy_timestamp:
+                    print(f"  Original timestamp: {original_timestamp}")
+                    print(f"  New timestamp:      {after_copy_timestamp}")
+                
                 return True
         except ClientError as e:
             print(f"Error copying {source_key}: {e}")
