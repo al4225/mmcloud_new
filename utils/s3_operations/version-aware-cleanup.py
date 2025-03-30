@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Improved S3 File Operations - For copying, moving, or deleting files in S3 folders
-with proper handling of directory structures and case-sensitive paths
+with proper handling of directory structures 
 """
 import boto3
 import argparse
@@ -549,20 +549,7 @@ def delete_file(bucket, key, current_version_only=False, dryrun=False):
 
 def should_preserve_structure(source_prefix, dest_prefix):
     """Determine if the directory structure should be preserved based on path analysis"""
-    # Case difference check (e.g., References vs references)
-    source_parts = source_prefix.rstrip('/').split('/')
-    dest_parts = dest_prefix.rstrip('/').split('/')
-    
-    # Get the last component of each path
-    source_basename = source_parts[-1] if source_parts else ""
-    dest_basename = dest_parts[-1] if dest_parts else ""
-    
-    # Check if this is just a case difference in the same folder
-    if source_basename.lower() == dest_basename.lower() and source_basename != dest_basename:
-        logger.info(f"Case variation detected between '{source_basename}' and '{dest_basename}'")
-        return True
-    
-    # Check if destination already exists
+    # Always preserve structure by default
     return True
 
 def calculate_destination_key(source_key, source_prefix, dest_prefix, preserve_structure=True):
@@ -570,14 +557,18 @@ def calculate_destination_key(source_key, source_prefix, dest_prefix, preserve_s
     norm_source_prefix = normalize_prefix(source_prefix)
     norm_dest_prefix = normalize_prefix(dest_prefix)
     
+    # Get the source folder name
+    source_parts = source_prefix.rstrip('/').split('/')
+    source_folder_name = source_parts[-1] if source_parts else ""
+    
     # Get the part of the path after the source prefix
     if source_key.startswith(norm_source_prefix):
         relative_path = source_key[len(norm_source_prefix):]
         if preserve_structure:
-            # Keep the full relative path, including any subfolders
-            return f"{norm_dest_prefix}{relative_path}"
+            # Always preserve the full folder structure, including the source folder name
+            return f"{norm_dest_prefix}{source_folder_name}/{relative_path}"
         else:
-            # Just preserve the filename
+            # Just preserve the filename for flatten mode
             filename = os.path.basename(source_key)
             return f"{norm_dest_prefix}{filename}"
     else:
@@ -613,6 +604,7 @@ def process_copy_or_move(file, source_bucket, dest_bucket, source_prefix, dest_p
 def process_files(operation, source_bucket, source_prefix, dest_bucket=None, 
                 dest_prefix=None, pattern=None, pattern_type=None, current_version_only=False,
                 preserve_structure=True, dryrun=False, dryrun_count=100):
+    """Main function to process files based on operation type"""
     """Main function to process files based on operation type"""
     # For list operation, just return the matching files
     if operation == 'list':
