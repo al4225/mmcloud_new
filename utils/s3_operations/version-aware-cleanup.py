@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 S3 Direct File Operations - For copying, moving, or deleting direct files in S3 folders
-Origincally created by Achyutha Harish, MemVerge Inc.
+Originally created by Achyutha Harish, MemVerge Inc.
 With heavy edits from Gao Wang via claude.ai
 """
 import boto3
@@ -153,17 +153,25 @@ class S3DirectOps:
         """Copy a file (with all versions or just current version)."""
         try:
             if current_version_only:
-                # Get metadata from source to preserve timestamps
-                metadata = self.get_object_metadata(source_bucket, source_key)
-                
                 # Copy only the current version
                 print(f"Copying {source_key} (current version only) → {dest_key}")
-                s3.copy_object(
-                    Bucket=dest_bucket, 
-                    Key=dest_key, 
-                    CopySource={'Bucket': source_bucket, 'Key': source_key},
-                    MetadataDirective='COPY'  # Preserve all metadata including timestamps
-                )
+                
+                # Key difference: For preserving timestamps and metadata completely, use MetadataDirective='COPY'
+                # without any custom metadata handling
+                copy_params = {
+                    'Bucket': dest_bucket, 
+                    'Key': dest_key, 
+                    'CopySource': {
+                        'Bucket': source_bucket,
+                        'Key': source_key
+                    },
+                    'MetadataDirective': 'COPY'  # This is crucial for preserving all metadata
+                }
+                
+                # Fix for S3 bug: the CopySource needs to be a string, not a dict
+                copy_params['CopySource'] = f"{source_bucket}/{source_key}"
+                
+                s3.copy_object(**copy_params)
                 return True
             else:
                 # Copy all versions
@@ -188,12 +196,6 @@ class S3DirectOps:
                 version_id = version.get('VersionId')
                 size = version.get('Size', 0)
                 
-                copy_source = {
-                    'Bucket': source_bucket,
-                    'Key': source_key,
-                    'VersionId': version_id
-                }
-                
                 if size > MAX_DIRECT_COPY_SIZE:
                     # Use multipart copy for large files
                     print(f"Large file detected: {source_key} (v:{version_id})")
@@ -201,16 +203,16 @@ class S3DirectOps:
                 else:
                     # Standard copy for regular files
                     print(f"Copying {source_key} (v:{version_id}) → {dest_key}")
-                    copy_params = {
-                        'Bucket': dest_bucket, 
-                        'Key': dest_key, 
-                        'CopySource': copy_source,
-                        # To preserve the timestamp, we use COPY directive (default)
-                        # This copies all metadata including timestamps from the source
-                        'MetadataDirective': 'COPY'
-                    }
                     
-                    s3.copy_object(**copy_params)
+                    # Fix: Format CopySource as a string for version-specific copy
+                    copy_source = f"{source_bucket}/{source_key}?versionId={version_id}"
+                    
+                    s3.copy_object(
+                        Bucket=dest_bucket, 
+                        Key=dest_key, 
+                        CopySource=copy_source,
+                        MetadataDirective='COPY'  # Preserve all metadata including timestamps
+                    )
             
             return True
             
@@ -221,30 +223,37 @@ class S3DirectOps:
     def _multipart_copy(self, source_bucket, source_key, version_id, dest_bucket, dest_key, metadata=None):
         """Helper method for multipart copying of large files."""
         try:
+            # Get original object metadata to preserve timestamps
+            if not metadata:
+                original_metadata = self.get_object_metadata(source_bucket, source_key, version_id)
+                metadata = original_metadata
+            
             # Get size information
-            response = s3.head_object(
-                Bucket=source_bucket, 
-                Key=source_key,
-                VersionId=version_id
-            )
-            size = response['ContentLength']
+            size = metadata.get('ContentLength', 0)
+            if size == 0:
+                # Fallback if metadata doesn't have size
+                response = s3.head_object(
+                    Bucket=source_bucket, 
+                    Key=source_key,
+                    VersionId=version_id
+                )
+                size = response['ContentLength']
             
             # Start multipart upload with metadata to preserve timestamps
             mpu_params = {
                 'Bucket': dest_bucket,
-                'Key': dest_key
+                'Key': dest_key,
+                # Copy all metadata including content type, custom metadata, etc.
+                'ContentType': metadata.get('ContentType', 'application/octet-stream'),
+                'Metadata': metadata.get('Metadata', {}),
+                'CacheControl': metadata.get('CacheControl', ''),
+                'ContentDisposition': metadata.get('ContentDisposition', ''),
+                'ContentEncoding': metadata.get('ContentEncoding', ''),
+                'ContentLanguage': metadata.get('ContentLanguage', '')
             }
             
-            # Add metadata parameters if available
-            if metadata:
-                mpu_params.update({
-                    'ContentType': metadata.get('ContentType', 'binary/octet-stream'),
-                    'Metadata': metadata.get('Metadata', {}),
-                    'CacheControl': metadata.get('CacheControl', ''),
-                    'ContentDisposition': metadata.get('ContentDisposition', ''),
-                    'ContentEncoding': metadata.get('ContentEncoding', ''),
-                    'ContentLanguage': metadata.get('ContentLanguage', '')
-                })
+            # Remove any None values that could cause API errors
+            mpu_params = {k: v for k, v in mpu_params.items() if v}
             
             mpu = s3.create_multipart_upload(**mpu_params)
             upload_id = mpu['UploadId']
@@ -260,15 +269,17 @@ class S3DirectOps:
                     range_string = f"bytes={offset}-{last_byte}"
                     
                     print(f"  Copying part {i} ({range_string})...")
+                    
+                    # Use string format for CopySource
+                    copy_source = f"{source_bucket}/{source_key}"
+                    if version_id:
+                        copy_source += f"?versionId={version_id}"
+                    
                     part = s3.upload_part_copy(
                         Bucket=dest_bucket,
                         Key=dest_key,
                         UploadId=upload_id,
-                        CopySource={
-                            'Bucket': source_bucket,
-                            'Key': source_key,
-                            'VersionId': version_id
-                        },
+                        CopySource=copy_source,
                         CopySourceRange=range_string,
                         PartNumber=i
                     )
