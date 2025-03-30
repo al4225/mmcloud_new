@@ -1,5 +1,5 @@
 # Copyright 2025 Achyutha Harish, MemVerge Inc.
-# With edits from Gao Wang using claude.ai
+# With edits from Gao Wang
 import boto3
 import argparse
 import os
@@ -10,6 +10,18 @@ s3 = boto3.client('s3')
 def strip_trailing_slashes(path):
     """Strip trailing slashes from a path."""
     return path.rstrip('/')
+
+def check_prefix_exists(bucket, prefix):
+    """Check if a prefix exists in the bucket."""
+    prefix = strip_trailing_slashes(prefix) + '/'  # Ensure trailing slash for prefix check
+    resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
+    return 'Contents' in resp or 'CommonPrefixes' in resp
+
+def create_prefix_marker(bucket, prefix):
+    """Create an empty marker object to represent a 'folder'."""
+    prefix = strip_trailing_slashes(prefix) + '/'  # Ensure trailing slash for folder marker
+    print(f"Creating folder marker: {prefix}")
+    s3.put_object(Bucket=bucket, Key=prefix, Body='')
 
 def list_all_versions(bucket, prefix):
     """List all versions of objects under the given prefix."""
@@ -37,6 +49,11 @@ def copy_versioned_objects(source_bucket, source_prefix, dest_bucket, dest_prefi
     """
     source_prefix = strip_trailing_slashes(source_prefix)
     dest_prefix = strip_trailing_slashes(dest_prefix)
+    
+    # Check if destination exists, create it if it doesn't
+    if not check_prefix_exists(dest_bucket, dest_prefix):
+        print(f"Destination prefix {dest_prefix} doesn't exist, creating it...")
+        create_prefix_marker(dest_bucket, dest_prefix)
     
     versions = list_all_versions(source_bucket, source_prefix)
     

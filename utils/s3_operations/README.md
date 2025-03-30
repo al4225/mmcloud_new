@@ -3,7 +3,7 @@
 This script provides a safe and reliable way to manage versioned objects in Amazon S3. It supports three operations:
 
 - **copy**: Copies all versions of objects from a source prefix to a destination prefix.
-- **move**: Copies all versions and then deletes them from the source location.
+- **move**: Copies all versions and then deletes them from the source location (can be used for renaming).
 - **delete**: Permanently deletes all versions of objects under a given prefix.
 
 This is useful when working with versioned S3 buckets where standard `aws s3 cp` or `mv` commands only operate on the latest version, leaving older versions behind and potentially incurring unexpected storage costs.
@@ -16,6 +16,7 @@ This is useful when working with versioned S3 buckets where standard `aws s3 cp`
 - Ensures that no hidden versions are left behind.
 - Supports merging content from source into destination (preserving subfolder structure).
 - Automatically strips trailing slashes from all prefixes.
+- Creates destination folders if they don't exist (useful for renaming operations).
 
 ## Requirements
 
@@ -49,6 +50,7 @@ python version-aware-cleanup.py \
 - All trailing slashes (`/`) are automatically stripped from prefixes.
 - By default, the source folder name is preserved in the destination path (creating a nested structure).
 - With the `--merge` option, contents under the source folder are copied directly to the destination while preserving their subfolder structure.
+- Destination folders are created automatically if they don't exist.
 
 ## Examples
 
@@ -94,9 +96,23 @@ ftp_fgc_xqtl/resource/20240409_ADSP_LD_matrix/ld_meta_file_apoe.tsv
 
 If the source had subfolders like `ftp_fgc_xqtl/20250218_ADSP_LD_matrix_APOEblocks_merge/subset1/file.txt`, it would be copied to `ftp_fgc_xqtl/resource/20240409_ADSP_LD_matrix/subset1/file.txt`.
 
+### Rename (Move Operation)
+
+Rename a folder by moving all versions to a new location:
+
+```bash
+python version-aware-cleanup.py \
+  --operation move \
+  --source-bucket statfungen \
+  --source-prefix ftp_fgc_xqtl/old_folder_name \
+  --dest-prefix ftp_fgc_xqtl/new_folder_name
+```
+
+This will effectively rename `old_folder_name` to `new_folder_name` while preserving all versions and the full folder hierarchy. The destination prefix will be created automatically if it doesn't exist.
+
 ### Move with Merge Example
 
-Move all versions and merge into destination:
+Move all versions and merge into an existing folder:
 
 ```bash
 python version-aware-cleanup.py \
@@ -123,3 +139,4 @@ python version-aware-cleanup.py \
 - The delete operation permanently deletes all versions under the given prefix. This cannot be undone.
 - This script is designed for versioned buckets. For non-versioned buckets, simpler aws s3 cp/mv/rm commands may suffice.
 - For large datasets or prefixes containing millions of versions, consider running with additional logging and batching strategies.
+- In S3, "folders" are just logical prefixes, but the script will create an empty object with a trailing slash to represent folders when needed.
