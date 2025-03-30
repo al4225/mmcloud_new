@@ -116,6 +116,25 @@ class S3DirectOps:
             print(f"Error listing objects: {e}")
             sys.exit(1)
     
+    def copy_file(self, source_bucket, source_key, dest_bucket, dest_key, current_version_only=False):
+        """Copy a file (with all versions or just current version)."""
+        try:
+            if current_version_only:
+                # Copy only the current version
+                print(f"Copying {source_key} (current version only) → {dest_key}")
+                s3.copy_object(
+                    Bucket=dest_bucket, 
+                    Key=dest_key, 
+                    CopySource={'Bucket': source_bucket, 'Key': source_key}
+                )
+                return True
+            else:
+                # Copy all versions
+                return self.copy_with_versions(source_bucket, source_key, dest_bucket, dest_key)
+        except ClientError as e:
+            print(f"Error copying {source_key}: {e}")
+            return False
+    
     def copy_with_versions(self, source_bucket, source_key, dest_bucket, dest_key):
         """Copy a file with all its versions."""
         try:
@@ -221,6 +240,21 @@ class S3DirectOps:
             print(f"Error preparing multipart copy: {e}")
             return False
     
+    def delete_file(self, bucket, key, current_version_only=False):
+        """Delete a file (all versions or just current version)."""
+        try:
+            if current_version_only:
+                # Delete only the current version
+                print(f"Deleting {key} (current version only)")
+                s3.delete_object(Bucket=bucket, Key=key)
+                return True
+            else:
+                # Delete all versions
+                return self.delete_with_versions(bucket, key)
+        except ClientError as e:
+            print(f"Error deleting {key}: {e}")
+            return False
+    
     def delete_with_versions(self, bucket, key):
         """Delete a file with all its versions."""
         try:
@@ -245,7 +279,7 @@ class S3DirectOps:
             return False
     
     def process_files(self, operation, source_bucket, source_prefix, dest_bucket=None, 
-                     dest_prefix=None, pattern=None, pattern_type=None):
+                     dest_prefix=None, pattern=None, pattern_type=None, current_version_only=False):
         """Process files with given operation (copy/move/delete/list)."""
         # For list operation, just return the matched files
         if operation == 'list':
@@ -268,7 +302,8 @@ class S3DirectOps:
         
         # Ask confirmation for delete
         if operation in ['delete', 'move'] and pattern:
-            confirmation = input(f"Are you sure you want to {operation} {len(matched_files)} files? (y/n): ")
+            version_str = "current versions only" if current_version_only else "all versions"
+            confirmation = input(f"Are you sure you want to {operation} {len(matched_files)} files ({version_str})? (y/n): ")
             if confirmation.lower() != 'y':
                 print("Operation cancelled.")
                 return False
@@ -283,17 +318,17 @@ class S3DirectOps:
             
             # Perform the operation
             if operation == 'delete':
-                success = self.delete_with_versions(source_bucket, source_key)
+                success = self.delete_file(source_bucket, source_key, current_version_only)
             elif operation in ['copy', 'move']:
                 # Calculate destination path
                 dest_key = f"{self.normalize_prefix(dest_prefix)}{file_name}"
                 
                 # Copy the file
-                success = self.copy_with_versions(source_bucket, source_key, dest_bucket, dest_key)
+                success = self.copy_file(source_bucket, source_key, dest_bucket, dest_key, current_version_only)
                 
                 # For move, also delete if copy was successful
                 if operation == 'move' and success:
-                    success = self.delete_with_versions(source_bucket, source_key)
+                    success = self.delete_file(source_bucket, source_key, current_version_only)
             else:
                 success = False
             
@@ -302,7 +337,8 @@ class S3DirectOps:
             else:
                 failed_count += 1
         
-        print(f"{operation.capitalize()} operation completed: {success_count} files processed, {failed_count} failed")
+        version_str = "current versions only" if current_version_only else "all versions"
+        print(f"{operation.capitalize()} operation completed ({version_str}): {success_count} files processed, {failed_count} failed")
         return failed_count == 0
 
 def parse_args():
@@ -320,6 +356,11 @@ def parse_args():
     pattern_group.add_argument('--pattern', help="Pattern to filter files by name")
     pattern_group.add_argument('--pattern-type', choices=['glob', 'regex', 'exact'],
                             default='glob', help="Type of pattern matching (default: glob)")
+    
+    # Version handling options
+    version_group = parser.add_argument_group('Version handling')
+    version_group.add_argument('--current-version-only', action='store_true',
+                            help="Only operate on current versions (ignore history)")
     
     return parser.parse_args()
 
@@ -340,7 +381,8 @@ def main():
             args.dest_bucket,
             args.dest_prefix,
             args.pattern,
-            args.pattern_type
+            args.pattern_type,
+            args.current_version_only
         )
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
