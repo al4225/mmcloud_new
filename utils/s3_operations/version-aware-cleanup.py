@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
 S3 Direct File Operations - For copying, moving, or deleting direct files in S3 folders
-Originally created by Achyutha Harish, MemVerge Inc.
-With heavy edits from Gao Wang via claude.ai
 """
 import boto3
 import argparse
@@ -11,11 +9,8 @@ import sys
 import fnmatch
 import re
 from botocore.exceptions import ClientError
-import datetime
-import time
 import logging
 
-# Set up logging with shorter timestamp format
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -23,31 +18,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize S3 client with extended timeout
 s3 = boto3.client('s3', config=boto3.session.Config(connect_timeout=60, read_timeout=60))
 s3_resource = boto3.resource('s3')
 
-# Max size for direct copy (4GB)
 MAX_DIRECT_COPY_SIZE = 4 * 1024 * 1024 * 1024
 
 class S3DirectOps:
-    """S3 operations for direct folder contents only."""
-    
-    @staticmethod
-    def normalize_prefix(prefix):
-        """Normalize a prefix path (remove leading, ensure trailing slash)."""
+    def normalize_prefix(self, prefix):
         return prefix.lstrip('/').rstrip('/') + '/'
     
-    @staticmethod
-    def get_basename(path):
-        """Get the base name (last component) of a path."""
+    def get_basename(self, path):
         return os.path.basename(path.rstrip('/'))
     
-    @staticmethod
-    def match_pattern(filename, pattern, pattern_type):
-        """Match a filename against a pattern."""
+    def is_recursive_pattern(self, pattern, pattern_type):
+        if not pattern:
+            return False
+            
+        if pattern_type == 'glob':
+            return '**' in pattern or '/*/' in pattern
+        elif pattern_type == 'regex':
+            return '/' in pattern and ('.*/' in pattern or '.+/' in pattern)
+            
+        return False
+    
+    def match_pattern(self, file_path, pattern, pattern_type, is_full_path=False):
         if not pattern:
             return True
+            
+        if not is_full_path:
+            file_path = os.path.basename(file_path)
         
         pattern_matchers = {
             'glob': lambda f, p: fnmatch.fnmatch(f, p),
@@ -55,15 +54,12 @@ class S3DirectOps:
             'exact': lambda f, p: f == p
         }
         
-        # Default to glob if pattern_type is not recognized
-        return pattern_matchers.get(pattern_type, pattern_matchers['glob'])(filename, pattern)
+        return pattern_matchers.get(pattern_type, pattern_matchers['glob'])(file_path, pattern)
     
     def check_prefix_exists(self, bucket, prefix):
-        """Check if a prefix exists in the bucket (without creating it)."""
         norm_prefix = self.normalize_prefix(prefix)
         
         try:
-            # Check if prefix exists by listing objects
             resp = s3.list_objects_v2(Bucket=bucket, Prefix=norm_prefix, MaxKeys=1)
             return 'Contents' in resp or 'CommonPrefixes' in resp
         except ClientError as e:
@@ -71,7 +67,6 @@ class S3DirectOps:
             return False
     
     def check_bucket_access(self, bucket):
-        """Verify bucket exists and is accessible."""
         try:
             s3.head_bucket(Bucket=bucket)
             return True
@@ -80,14 +75,10 @@ class S3DirectOps:
             return False
     
     def check_and_create_folder(self, bucket, prefix):
-        """Check if a bucket/prefix exists, create if needed."""
-        # Verify bucket exists
         if not self.check_bucket_access(bucket):
             return False
             
-        # Create folder if needed
         try:
-            # Check if prefix already exists
             norm_prefix = self.normalize_prefix(prefix)
             
             if not self.check_prefix_exists(bucket, norm_prefix):
@@ -100,12 +91,10 @@ class S3DirectOps:
             return False
     
     def list_direct_files(self, bucket, prefix, pattern=None, pattern_type=None):
-        """List only direct files (not folders) within a prefix."""
         norm_prefix = self.normalize_prefix(prefix)
         logger.info(f"Listing direct files in '{norm_prefix}'...")
         
         try:
-            # List objects with delimiter to get only direct children
             response = s3.list_objects_v2(
                 Bucket=bucket,
                 Prefix=norm_prefix,
@@ -114,15 +103,12 @@ class S3DirectOps:
             
             matched_files = []
             
-            # Process direct files
             for obj in response.get('Contents', []):
                 key = obj.get('Key')
                 
-                # Skip folder marker itself
                 if key == norm_prefix:
                     continue
                 
-                # Apply pattern matching to filename
                 file_name = os.path.basename(key)
                 if self.match_pattern(file_name, pattern, pattern_type):
                     matched_files.append({
@@ -132,27 +118,111 @@ class S3DirectOps:
                         'LastModified': obj.get('LastModified')
                     })
             
-            # Log the results
             folder_count = len(response.get('CommonPrefixes', []))
             logger.info(f"Found {len(matched_files)} matching files and {folder_count} folders")
             
-            if pattern:
+            if pattern and matched_files:
                 logger.info(f"Files matching pattern '{pattern}':")
                 for file in matched_files:
                     logger.info(f"  - {file['Name']}")
             
             if pattern and not matched_files:
-                logger.error(f"No files match the pattern '{pattern}'")
-                return []
+                logger.info(f"No files match the pattern '{pattern}'")
                 
             return matched_files
             
         except ClientError as e:
             logger.error(f"Error listing objects: {e}")
             return []
+            
+    def list_folders(self, bucket, prefix):
+        norm_prefix = self.normalize_prefix(prefix)
+        logger.info(f"Listing folders in '{norm_prefix}'...")
+        
+        try:
+            response = s3.list_objects_v2(
+                Bucket=bucket,
+                Prefix=norm_prefix,
+                Delimiter='/'
+            )
+            
+            folders = []
+            
+            for prefix_obj in response.get('CommonPrefixes', []):
+                prefix_key = prefix_obj.get('Prefix')
+                
+                if prefix_key == norm_prefix:
+                    continue
+                
+                folder_name = os.path.basename(prefix_key.rstrip('/'))
+                folders.append({
+                    'Key': prefix_key,
+                    'Name': folder_name
+                })
+            
+            return folders
+            
+        except ClientError as e:
+            logger.error(f"Error listing folders: {e}")
+            return []
+            
+    def list_recursive(self, bucket, prefix, pattern=None, pattern_type=None):
+        norm_prefix = self.normalize_prefix(prefix)
+        logger.info(f"Recursively listing all files in '{norm_prefix}'...")
+        
+        is_recursive_pattern = False
+        if pattern:
+            is_recursive_pattern = self.is_recursive_pattern(pattern, pattern_type)
+            if is_recursive_pattern:
+                logger.info(f"Detected recursive pattern: '{pattern}'. Will match against full paths.")
+            else:
+                logger.info(f"Using pattern: '{pattern}'. Will match against filenames only.")
+        
+        try:
+            paginator = s3.get_paginator('list_objects_v2')
+            all_files = []
+            
+            for page in paginator.paginate(Bucket=bucket, Prefix=norm_prefix):
+                for obj in page.get('Contents', []):
+                    key = obj.get('Key')
+                    
+                    if key == norm_prefix:
+                        continue
+                    
+                    if key.endswith('/') and obj.get('Size', 0) == 0:
+                        continue
+                    
+                    if is_recursive_pattern:
+                        relative_path = key[len(norm_prefix):]
+                        match = self.match_pattern(relative_path, pattern, pattern_type, is_full_path=True)
+                    else:
+                        file_name = os.path.basename(key)
+                        match = self.match_pattern(file_name, pattern, pattern_type)
+                    
+                    if match:
+                        all_files.append({
+                            'Key': key,
+                            'Size': obj.get('Size', 0),
+                            'Name': os.path.basename(key),
+                            'LastModified': obj.get('LastModified')
+                        })
+            
+            logger.info(f"Found {len(all_files)} files recursively")
+            
+            if pattern and all_files:
+                logger.info(f"Files matching pattern '{pattern}':")
+                for file in all_files[:10]:
+                    logger.info(f"  - {file['Key']}")
+                if len(all_files) > 10:
+                    logger.info(f"  ... and {len(all_files) - 10} more")
+            
+            return all_files
+            
+        except ClientError as e:
+            logger.error(f"Error listing objects recursively: {e}")
+            return []
     
     def get_object_metadata(self, bucket, key, version_id=None):
-        """Get full metadata of an object, optionally for a specific version."""
         try:
             if version_id:
                 return s3.head_object(Bucket=bucket, Key=key, VersionId=version_id)
@@ -163,7 +233,6 @@ class S3DirectOps:
             return None
     
     def get_object_tags(self, bucket, key, version_id=None):
-        """Get object tags."""
         try:
             if version_id:
                 tags_response = s3.get_object_tagging(
@@ -178,17 +247,14 @@ class S3DirectOps:
     
     def prepare_copy_args(self, metadata, content_type, content_disposition=None, 
                          content_encoding=None, cache_control=None, for_multipart=False):
-        """Prepare common copy arguments."""
         copy_args = {
             'Metadata': metadata,
             'ContentType': content_type or 'binary/octet-stream'
         }
         
-        # Add MetadataDirective only for copy_object operations, not for multipart
         if not for_multipart:
             copy_args['MetadataDirective'] = 'REPLACE'
         
-        # Add optional parameters if they exist
         if content_disposition:
             copy_args['ContentDisposition'] = content_disposition
         if content_encoding:
@@ -199,7 +265,6 @@ class S3DirectOps:
         return copy_args
     
     def apply_tags(self, bucket, key, tags):
-        """Apply tags to an object."""
         if tags:
             try:
                 s3.put_object_tagging(
@@ -214,39 +279,27 @@ class S3DirectOps:
         return True
     
     def copy_with_metadata_preservation(self, source_bucket, source_key, dest_bucket, dest_key, source_metadata=None):
-        """
-        Copy a file with complete metadata preservation, including timestamps in metadata.
-        
-        This method first gets all metadata from the source if not provided,
-        then performs a copy operation with metadata preservation.
-        """
         try:
-            # Get object metadata if not provided
             if not source_metadata:
                 source_metadata = self.get_object_metadata(source_bucket, source_key)
                 if not source_metadata:
                     return False
             
-            # Extract important metadata
             source_timestamp = source_metadata.get('LastModified')
             if not source_timestamp:
                 logger.warning(f"Warning: Could not get timestamp for {source_key}")
                 return False
             
-            # Copy existing metadata and add/update original timestamp
             metadata = source_metadata.get('Metadata', {})
             metadata['original-last-modified'] = source_timestamp.isoformat()
             
-            # Get content type and other important headers
             content_type = source_metadata.get('ContentType', 'binary/octet-stream')
             content_disposition = source_metadata.get('ContentDisposition', '')
             content_encoding = source_metadata.get('ContentEncoding', '')
             cache_control = source_metadata.get('CacheControl', '')
             
-            # Get tags
             tags = self.get_object_tags(source_bucket, source_key)
             
-            # Determine if we need multipart copy based on size
             size = source_metadata.get('ContentLength', 0)
             logger.info(f"Copying {source_key} → {dest_key} (size: {size} bytes)")
             
@@ -257,36 +310,24 @@ class S3DirectOps:
                     metadata, content_type, content_disposition, content_encoding, cache_control, tags
                 )
             else:
-                # Standard copy with metadata preservation
                 copy_args = self.prepare_copy_args(
                     metadata, content_type, content_disposition, content_encoding, cache_control
                 )
                 
-                # Add bucket and key information
                 copy_args.update({
                     'Bucket': dest_bucket,
                     'Key': dest_key,
                     'CopySource': {'Bucket': source_bucket, 'Key': source_key}
                 })
                 
-                # Perform the copy
                 s3.copy_object(**copy_args)
                 
-                # Apply tags
                 self.apply_tags(dest_bucket, dest_key, tags)
                 
                 success = True
                 
             if success:
                 logger.info(f"Successfully copied object with metadata: {source_key} → {dest_key}")
-                logger.info(f"  Original timestamp: {source_timestamp}")
-                
-                # Display new timestamp for verification
-                new_metadata = self.get_object_metadata(dest_bucket, dest_key)
-                if new_metadata:
-                    new_timestamp = new_metadata.get('LastModified')
-                    logger.info(f"  New timestamp: {new_timestamp}")
-                    logger.info(f"  Original timestamp preserved in metadata as 'original-last-modified'")
                 
             return success
         except ClientError as e:
@@ -295,21 +336,17 @@ class S3DirectOps:
     
     def _multipart_copy_with_metadata(self, source_bucket, source_key, version_id, dest_bucket, dest_key,
                                      metadata, content_type, content_disposition, content_encoding, cache_control, tags):
-        """Helper method for multipart copying of large files with metadata preservation."""
         try:
-            # Get size information
             response = self.get_object_metadata(source_bucket, source_key, version_id)
             if not response:
                 return False
                 
             size = response['ContentLength']
             
-            # Start multipart upload with metadata - use for_multipart=True to exclude MetadataDirective
             mpu_args = self.prepare_copy_args(
                 metadata, content_type, content_disposition, content_encoding, cache_control, for_multipart=True
             )
             
-            # Add bucket and key information
             mpu_args.update({
                 'Bucket': dest_bucket,
                 'Key': dest_key
@@ -318,28 +355,14 @@ class S3DirectOps:
             mpu = s3.create_multipart_upload(**mpu_args)
             upload_id = mpu['UploadId']
             
-            # Calculate optimal part size for maximum efficiency
-            # AWS S3 limits:
-            # - Minimum part size: 5MB (except the last part)
-            # - Maximum part size: 5GB
-            # - Maximum parts per upload: 10,000
-            # - Best practices suggest using larger parts for better throughput
-            
-            # Using 500MB as our target part size for large files
-            # This balances network efficiency with resilience
             target_part_size = 500 * 1024 * 1024  # 500MB
             
-            # Ensure we don't exceed the maximum number of parts (10,000)
             min_part_size = max(5 * 1024 * 1024, size // 10000)  # At least 5MB
             
-            # Choose the larger of our target size and the minimum required size
             part_size = max(target_part_size, min_part_size)
-            
-            # Ensure part size is less than our direct copy threshold
             part_size = min(part_size, MAX_DIRECT_COPY_SIZE - 1)
             
             try:
-                # Copy parts
                 parts = []
                 for i, offset in enumerate(range(0, size, part_size), 1):
                     last_byte = min(offset + part_size - 1, size - 1)
@@ -363,7 +386,6 @@ class S3DirectOps:
                         'ETag': part['CopyPartResult']['ETag']
                     })
                 
-                # Complete the upload
                 s3.complete_multipart_upload(
                     Bucket=dest_bucket,
                     Key=dest_key,
@@ -371,7 +393,6 @@ class S3DirectOps:
                     MultipartUpload={'Parts': parts}
                 )
                 
-                # Apply tags
                 self.apply_tags(dest_bucket, dest_key, tags)
                 
                 logger.info(f"Multipart copy completed: {source_key} → {dest_key}")
@@ -385,7 +406,6 @@ class S3DirectOps:
             return False
     
     def get_all_versions(self, bucket, key):
-        """Get all versions of an object."""
         try:
             response = s3.list_object_versions(Bucket=bucket, Prefix=key)
             return [v for v in response.get('Versions', []) if v.get('Key') == key]
@@ -394,58 +414,43 @@ class S3DirectOps:
             return []
     
     def copy_file(self, source_bucket, source_key, dest_bucket, dest_key, current_version_only=False):
-        """
-        Copy a file with timestamp preservation.
-        Always preserves the timestamp of the most recent version in metadata.
-        """
         try:
-            # Get the current version's metadata first
             source_metadata = self.get_object_metadata(source_bucket, source_key)
             if not source_metadata:
                 return False
             
             if current_version_only:
-                # Copy only the current version
                 return self.copy_with_metadata_preservation(
                     source_bucket, source_key, dest_bucket, dest_key, source_metadata
                 )
             else:
-                # Copy all versions including the current one
                 logger.info(f"Copying all versions of {source_key} → {dest_key}")
                 
-                # List all versions
                 versions = self.get_all_versions(source_bucket, source_key)
                 
                 if not versions:
                     logger.warning(f"Warning: No versions found for {source_key}")
                     return False
                 
-                # Find the current (non-deleted) version first
                 current_version = next((v for v in versions if not v.get('IsDeleted', False)), None)
                 
-                # First copy the current version to preserve metadata
                 if current_version:
                     version_id = current_version.get('VersionId')
-                    # Get this version's metadata
                     version_metadata = self.get_object_metadata(
                         source_bucket, source_key, version_id
                     ) or source_metadata
                     
-                    # Copy the current version first with metadata preservation
                     success = self.copy_with_metadata_preservation(
                         source_bucket, source_key, dest_bucket, dest_key, version_metadata
                     )
                     if not success:
                         return False
                 
-                # Copy other versions (if any)
                 for version in versions:
                     version_id = version.get('VersionId')
-                    # Skip the current version as we've already copied it
                     if current_version and version_id == current_version.get('VersionId'):
                         continue
                     
-                    # Copy this version
                     copy_source = {'Bucket': source_bucket, 'Key': source_key, 'VersionId': version_id}
                     s3.copy_object(
                         Bucket=dest_bucket,
@@ -459,25 +464,20 @@ class S3DirectOps:
             return False
     
     def delete_file(self, bucket, key, current_version_only=False):
-        """Delete a file (all versions or just current version)."""
         try:
             if current_version_only:
-                # Delete only the current version
                 logger.info(f"Deleting {key} (current version only)")
                 s3.delete_object(Bucket=bucket, Key=key)
                 return True
             else:
-                # Delete all versions
                 logger.info(f"Deleting all versions of {key}")
                 
-                # Get all versions
                 versions = self.get_all_versions(bucket, key)
                 
                 if not versions:
                     logger.warning(f"Warning: No versions found for {key}")
                     return False
                 
-                # Delete each version
                 for version in versions:
                     version_id = version.get('VersionId')
                     s3.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
@@ -488,12 +488,9 @@ class S3DirectOps:
             return False
     
     def calculate_destination_path(self, source_prefix, dest_prefix, file_name, use_merge):
-        """Calculate the destination path for a file."""
         if use_merge:
-            # When merging, files go directly to the destination folder
             return f"{self.normalize_prefix(dest_prefix)}{file_name}"
         else:
-            # When preserving structure, files go to a subfolder named after the source folder
             source_base = self.get_basename(source_prefix)
             dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
             return f"{dest_subfolder}/{file_name}"
@@ -501,22 +498,72 @@ class S3DirectOps:
     def process_files(self, operation, source_bucket, source_prefix, dest_bucket=None, 
                      dest_prefix=None, pattern=None, pattern_type=None, current_version_only=False,
                      merge=False):
-        """Process files with given operation (copy/move/delete/list)."""
-        # For list operation, just return the matched files
         if operation == 'list':
             matched_files = self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
-            return len(matched_files) > 0, matched_files
+            return True, matched_files
         
-        # For copy/move, verify destination
         if operation in ['copy', 'move']:
             if not dest_bucket or not dest_prefix:
                 logger.error("Error: Destination bucket and prefix required for copy/move operations")
                 return False, None
         
-        # Get matching files
-        matched_files = self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
+        # By default, use recursive mode except for non-recursive patterns
+        is_recursive_pattern = pattern and self.is_recursive_pattern(pattern, pattern_type)
+        
+        # Handle pattern - if present, determine if it's recursive or not
+        if pattern and not is_recursive_pattern:
+            logger.info(f"Pattern specified: '{pattern}'. Only searching in current directory.")
+            matched_files = self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
+            use_recursive = False
+        elif pattern and is_recursive_pattern:
+            logger.info(f"Recursive pattern detected: '{pattern}'. Searching in all subdirectories.")
+            matched_files = self.list_recursive(source_bucket, source_prefix, pattern, pattern_type)
+            use_recursive = True
+        else:
+            # No pattern - default to recursive mode
+            logger.info(f"Using recursive mode to process files and subfolders")
+            matched_files = self.list_recursive(source_bucket, source_prefix, None, None)
+            use_recursive = True
+            
+            # Check for folders
+            folders = self.list_folders(source_bucket, source_prefix)
+            if folders and not matched_files:
+                folder_names = [f['Name'] for f in folders]
+                logger.info(f"Found {len(folders)} folders but no direct files: {', '.join(folder_names)}")
+        
+        # Check if we have any files to process
         if not matched_files:
-            return False, None
+            if pattern:
+                logger.error(f"No files match the pattern '{pattern}'")
+                return False, None
+            
+            # Check for folders when in recursive mode
+            folders = self.list_folders(source_bucket, source_prefix)
+            if use_recursive and folders and operation in ['copy', 'move']:
+                logger.info(f"No matching files found, but {len(folders)} folders exist")
+                logger.info(f"Will create corresponding folder structure in destination")
+                
+                for folder in folders:
+                    folder_success, _ = self.process_files(
+                        operation, 
+                        source_bucket, 
+                        folder['Key'], 
+                        dest_bucket, 
+                        dest_prefix, 
+                        pattern, 
+                        pattern_type, 
+                        current_version_only, 
+                        merge
+                    )
+                    
+                    if not folder_success:
+                        logger.error(f"Failed to process folder: {folder['Key']}")
+                        return False, None
+                
+                return True, []
+            
+            logger.warning(f"No files found in '{source_prefix}'")
+            return True, []
         
         # Ask confirmation for delete
         if operation in ['delete', 'move'] and pattern:
@@ -531,7 +578,6 @@ class S3DirectOps:
         if operation in ['copy', 'move']:
             dest_exists = self.check_prefix_exists(dest_bucket, dest_prefix)
             
-            # Create destination if it doesn't exist
             if not self.check_and_create_folder(dest_bucket, dest_prefix):
                 logger.error(f"Error: Could not access or create destination {dest_bucket}/{dest_prefix}")
                 return False, None
@@ -539,7 +585,6 @@ class S3DirectOps:
             # Determine merge mode
             use_merge = merge or (pattern is not None) or (not dest_exists and operation == 'move')
             
-            # Log the operation type
             if dest_exists:
                 if merge:
                     logger.info(f"Performing {operation} with merge (files will go directly to destination)")
@@ -593,18 +638,28 @@ class S3DirectOps:
     
     def _process_copy_or_move(self, file, source_bucket, dest_bucket, source_prefix, dest_prefix, 
                              use_merge, current_version_only, is_move):
-        """Helper method to process copy or move operations."""
         source_key = file['Key']
         file_name = file['Name']
         
-        # Calculate destination path
-        dest_key = self.calculate_destination_path(source_prefix, dest_prefix, file_name, use_merge)
-        
-        # Ensure subfolder exists if not merging
-        if not use_merge:
-            source_base = self.get_basename(source_prefix)
-            dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
-            self.check_and_create_folder(dest_bucket, dest_subfolder)
+        # For recursive operations, preserve the directory structure
+        if source_key.startswith(source_prefix) and '/' in source_key[len(source_prefix):]:
+            # This is a file in a subfolder, preserve the path structure
+            relative_path = source_key[len(source_prefix):]
+            dest_key = f"{self.normalize_prefix(dest_prefix)}{relative_path}"
+            
+            # Ensure parent folders exist
+            parent_folders = os.path.dirname(dest_key)
+            if parent_folders:
+                self.check_and_create_folder(dest_bucket, parent_folders)
+        else:
+            # Calculate destination path for direct files
+            dest_key = self.calculate_destination_path(source_prefix, dest_prefix, file_name, use_merge)
+            
+            # Ensure subfolder exists if not merging
+            if not use_merge:
+                source_base = self.get_basename(source_prefix)
+                dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
+                self.check_and_create_folder(dest_bucket, dest_subfolder)
         
         # Copy the file
         success = self.copy_file(source_bucket, source_key, dest_bucket, dest_key, current_version_only)
@@ -616,7 +671,6 @@ class S3DirectOps:
         return success
 
 def parse_args():
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="S3 Direct File Operations with Pattern Matching")
     parser.add_argument('--operation', choices=['copy', 'move', 'delete', 'list'], 
                         required=True, help="Operation to perform")
@@ -644,7 +698,6 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    """Main entry point for the script."""
     args = parse_args()
     s3ops = S3DirectOps()
     
@@ -671,8 +724,8 @@ def main():
             logger.error("One or more file operations failed. Exiting with error.")
             sys.exit(1)
             
-        # For list operation, just return success
-        if args.operation == 'list' and matched_files:
+        # For list operation, always return success
+        if args.operation == 'list':
             sys.exit(0)
             
     except Exception as e:
