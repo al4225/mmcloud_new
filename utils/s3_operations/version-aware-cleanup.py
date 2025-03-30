@@ -143,13 +143,13 @@ class S3DirectOps:
             
             if pattern and not matched_files:
                 logger.error(f"No files match the pattern '{pattern}'")
-                sys.exit(1)
+                return []
                 
             return matched_files
             
         except ClientError as e:
             logger.error(f"Error listing objects: {e}")
-            sys.exit(1)
+            return []
     
     def get_object_metadata(self, bucket, key, version_id=None):
         """Get full metadata of an object, optionally for a specific version."""
@@ -504,18 +504,19 @@ class S3DirectOps:
         """Process files with given operation (copy/move/delete/list)."""
         # For list operation, just return the matched files
         if operation == 'list':
-            return self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
+            matched_files = self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
+            return len(matched_files) > 0, matched_files
         
         # For copy/move, verify destination
         if operation in ['copy', 'move']:
             if not dest_bucket or not dest_prefix:
                 logger.error("Error: Destination bucket and prefix required for copy/move operations")
-                return False
+                return False, None
         
         # Get matching files
         matched_files = self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
         if not matched_files:
-            return False
+            return False, None
         
         # Ask confirmation for delete
         if operation in ['delete', 'move'] and pattern:
@@ -523,7 +524,7 @@ class S3DirectOps:
             confirmation = input(f"Are you sure you want to {operation} {len(matched_files)} files ({version_str})? (y/n): ")
             if confirmation.lower() != 'y':
                 logger.info("Operation cancelled.")
-                return False
+                return False, None
         
         # Check destination for copy/move operations
         dest_exists = False
@@ -533,7 +534,7 @@ class S3DirectOps:
             # Create destination if it doesn't exist
             if not self.check_and_create_folder(dest_bucket, dest_prefix):
                 logger.error(f"Error: Could not access or create destination {dest_bucket}/{dest_prefix}")
-                return False
+                return False, None
                 
             # Determine merge mode
             use_merge = merge or (pattern is not None) or (not dest_exists and operation == 'move')
@@ -586,7 +587,9 @@ class S3DirectOps:
             path_str = "preserving folder structure"
             
         logger.info(f"{operation.capitalize()} operation completed ({version_str}, {path_str}): {success_count} files processed, {failed_count} failed")
-        return failed_count == 0
+        
+        # Return overall success status
+        return failed_count == 0, matched_files
     
     def _process_copy_or_move(self, file, source_bucket, dest_bucket, source_prefix, dest_prefix, 
                              use_merge, current_version_only, is_move):
@@ -650,7 +653,8 @@ def main():
         args.dest_bucket = args.source_bucket
     
     try:
-        s3ops.process_files(
+        # Process files and capture the result
+        success, matched_files = s3ops.process_files(
             args.operation,
             args.source_bucket,
             args.source_prefix,
@@ -661,6 +665,16 @@ def main():
             args.current_version_only,
             args.merge
         )
+        
+        # Exit with error if any operation failed
+        if not success:
+            logger.error("One or more file operations failed. Exiting with error.")
+            sys.exit(1)
+            
+        # For list operation, just return success
+        if args.operation == 'list' and matched_files:
+            sys.exit(0)
+            
     except Exception as e:
         logger.error(f"An unexpected error occurred: {e}")
         sys.exit(1)
