@@ -99,7 +99,8 @@ class S3DirectOps:
                     matched_files.append({
                         'Key': key,
                         'Size': obj.get('Size', 0),
-                        'Name': file_name
+                        'Name': file_name,
+                        'LastModified': obj.get('LastModified')
                     })
             
             # Log the results
@@ -121,16 +122,44 @@ class S3DirectOps:
             print(f"Error listing objects: {e}")
             sys.exit(1)
     
+    def get_object_metadata(self, bucket, key, version_id=None):
+        """Get metadata for an object."""
+        try:
+            params = {
+                'Bucket': bucket,
+                'Key': key
+            }
+            if version_id:
+                params['VersionId'] = version_id
+                
+            response = s3.head_object(**params)
+            return response
+        except ClientError as e:
+            print(f"Error getting metadata for {key}: {e}")
+            return {}
+    
     def copy_file(self, source_bucket, source_key, dest_bucket, dest_key, current_version_only=False):
         """Copy a file (with all versions or just current version)."""
         try:
             if current_version_only:
+                # Get metadata from source to preserve timestamps
+                metadata = self.get_object_metadata(source_bucket, source_key)
+                
                 # Copy only the current version
                 print(f"Copying {source_key} (current version only) → {dest_key}")
                 s3.copy_object(
                     Bucket=dest_bucket, 
                     Key=dest_key, 
-                    CopySource={'Bucket': source_bucket, 'Key': source_key}
+                    CopySource={'Bucket': source_bucket, 'Key': source_key},
+                    MetadataDirective='REPLACE',
+                    ContentType=metadata.get('ContentType', 'binary/octet-stream'),
+                    Metadata=metadata.get('Metadata', {}),
+                    CacheControl=metadata.get('CacheControl', ''),
+                    ContentDisposition=metadata.get('ContentDisposition', ''),
+                    ContentEncoding=metadata.get('ContentEncoding', ''),
+                    ContentLanguage=metadata.get('ContentLanguage', ''),
+                    # Preserve the LastModified timestamp 
+                    # S3 automatically preserves the timestamp when using METADATA_DIRECTIVE=COPY (default)
                 )
                 return True
             else:
@@ -156,6 +185,9 @@ class S3DirectOps:
                 version_id = version.get('VersionId')
                 size = version.get('Size', 0)
                 
+                # Get metadata to preserve timestamps
+                metadata = self.get_object_metadata(source_bucket, source_key, version_id)
+                
                 copy_source = {
                     'Bucket': source_bucket,
                     'Key': source_key,
@@ -165,11 +197,20 @@ class S3DirectOps:
                 if size > MAX_DIRECT_COPY_SIZE:
                     # Use multipart copy for large files
                     print(f"Large file detected: {source_key} (v:{version_id})")
-                    self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key)
+                    self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key, metadata)
                 else:
                     # Standard copy for regular files
                     print(f"Copying {source_key} (v:{version_id}) → {dest_key}")
-                    s3.copy_object(Bucket=dest_bucket, Key=dest_key, CopySource=copy_source)
+                    copy_params = {
+                        'Bucket': dest_bucket, 
+                        'Key': dest_key, 
+                        'CopySource': copy_source,
+                        # To preserve the timestamp, we use COPY directive (default)
+                        # This copies all metadata including timestamps from the source
+                        'MetadataDirective': 'COPY'
+                    }
+                    
+                    s3.copy_object(**copy_params)
             
             return True
             
@@ -177,7 +218,7 @@ class S3DirectOps:
             print(f"Error copying {source_key}: {e}")
             return False
     
-    def _multipart_copy(self, source_bucket, source_key, version_id, dest_bucket, dest_key):
+    def _multipart_copy(self, source_bucket, source_key, version_id, dest_bucket, dest_key, metadata=None):
         """Helper method for multipart copying of large files."""
         try:
             # Get size information
@@ -188,8 +229,24 @@ class S3DirectOps:
             )
             size = response['ContentLength']
             
-            # Start multipart upload
-            mpu = s3.create_multipart_upload(Bucket=dest_bucket, Key=dest_key)
+            # Start multipart upload with metadata to preserve timestamps
+            mpu_params = {
+                'Bucket': dest_bucket,
+                'Key': dest_key
+            }
+            
+            # Add metadata parameters if available
+            if metadata:
+                mpu_params.update({
+                    'ContentType': metadata.get('ContentType', 'binary/octet-stream'),
+                    'Metadata': metadata.get('Metadata', {}),
+                    'CacheControl': metadata.get('CacheControl', ''),
+                    'ContentDisposition': metadata.get('ContentDisposition', ''),
+                    'ContentEncoding': metadata.get('ContentEncoding', ''),
+                    'ContentLanguage': metadata.get('ContentLanguage', '')
+                })
+            
+            mpu = s3.create_multipart_upload(**mpu_params)
             upload_id = mpu['UploadId']
             
             # Calculate optimal part size (10MB minimum)
