@@ -314,9 +314,6 @@ class S3DirectOps:
                 print("Operation cancelled.")
                 return False
         
-        # Get source folder basename for path construction
-        source_base = self.get_basename(source_prefix)
-        
         # Process operations
         success_count = 0
         failed_count = 0
@@ -325,16 +322,20 @@ class S3DirectOps:
             source_key = file['Key']
             file_name = file['Name']
             
+            # When pattern is specified, ALWAYS use direct paths (merge behavior)
+            use_merge = merge or (pattern is not None)
+            
             # Perform the operation
             if operation == 'delete':
                 success = self.delete_file(source_bucket, source_key, current_version_only)
             elif operation in ['copy', 'move']:
                 # Calculate destination path
-                if merge:
+                if use_merge:
                     # When merging, files go directly to the destination folder
                     dest_key = f"{self.normalize_prefix(dest_prefix)}{file_name}"
                 else:
                     # When preserving structure, files go to a subfolder named after the source folder
+                    source_base = self.get_basename(source_prefix)
                     dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
                     dest_key = f"{dest_subfolder}/{file_name}"
                     
@@ -356,7 +357,11 @@ class S3DirectOps:
                 failed_count += 1
         
         version_str = "current versions only" if current_version_only else "all versions"
-        merge_str = "merged into destination" if merge else "preserving folder structure"
+        if pattern:
+            merge_str = "directly to destination"
+        else:
+            merge_str = "merged into destination" if merge else "preserving folder structure"
+            
         print(f"{operation.capitalize()} operation completed ({version_str}, {merge_str}): {success_count} files processed, {failed_count} failed")
         return failed_count == 0
 
