@@ -134,6 +134,36 @@ python version-aware-cleanup.py \
   --source-prefix ftp_fgc_xqtl/temp_data
 ```
 
+## Pattern Matching
+
+The tool supports filtering files by name patterns, allowing you to operate on specific files within a prefix:
+
+### Pattern Matching Options
+
+- `--pattern`: A pattern to filter files by name (supports glob patterns by default)
+- `--pattern-type`: Type of pattern matching to use:
+  - `glob`: Unix-style wildcard matching (default)
+  - `regex`: Regular expression matching
+  - `exact`: Exact filename matching
+
+### Pattern Matching Behavior
+
+1. Patterns are applied to filenames only (not to full paths)
+2. Pattern matching is only applied to files, not folder markers
+3. When using patterns with delete operations, you'll be asked for confirmation
+
+### Examples
+
+- Copy only `.bam` files from a folder:
+
+```bash
+python s3-version-ops.py \
+  --operation copy \
+  --source-bucket statfungen \
+  --source-prefix ftp_fgc_xqtl/ROSMAP/test_bams \
+  --dest-prefix ftp_fgc_xqtl/resource/toy_bam_data/rnaseq_bam \
+  --pattern "*.bam"
+
 ## Notes
 - The move operation performs a full versioned copy followed by deletion of all versions in the source.
 - The delete operation permanently deletes all versions under the given prefix. This cannot be undone.
