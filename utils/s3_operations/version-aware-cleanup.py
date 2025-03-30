@@ -15,8 +15,12 @@ import datetime
 import time
 import logging
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Set up logging with shorter timestamp format
+logging.basicConfig(
+    level=logging.INFO, 
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%y-%m %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
 # Initialize S3 client with extended timeout
@@ -45,13 +49,14 @@ class S3DirectOps:
         if not pattern:
             return True
         
-        if pattern_type == 'glob':
-            return fnmatch.fnmatch(filename, pattern)
-        elif pattern_type == 'regex':
-            return bool(re.search(pattern, filename))
-        elif pattern_type == 'exact':
-            return filename == pattern
-        return fnmatch.fnmatch(filename, pattern)
+        pattern_matchers = {
+            'glob': lambda f, p: fnmatch.fnmatch(f, p),
+            'regex': lambda f, p: bool(re.search(p, f)),
+            'exact': lambda f, p: f == p
+        }
+        
+        # Default to glob if pattern_type is not recognized
+        return pattern_matchers.get(pattern_type, pattern_matchers['glob'])(filename, pattern)
     
     def check_prefix_exists(self, bucket, prefix):
         """Check if a prefix exists in the bucket (without creating it)."""
@@ -65,23 +70,27 @@ class S3DirectOps:
             logger.error(f"Error checking prefix '{prefix}': {e}")
             return False
     
+    def check_bucket_access(self, bucket):
+        """Verify bucket exists and is accessible."""
+        try:
+            s3.head_bucket(Bucket=bucket)
+            return True
+        except ClientError as e:
+            logger.error(f"Error: Cannot access bucket '{bucket}': {e}")
+            return False
+    
     def check_and_create_folder(self, bucket, prefix):
         """Check if a bucket/prefix exists, create if needed."""
         # Verify bucket exists
-        try:
-            s3.head_bucket(Bucket=bucket)
-        except ClientError as e:
-            logger.error(f"Error: Cannot access bucket '{bucket}': {e}")
+        if not self.check_bucket_access(bucket):
             return False
             
         # Create folder if needed
         try:
             # Check if prefix already exists
             norm_prefix = self.normalize_prefix(prefix)
-            resp = s3.list_objects_v2(Bucket=bucket, Prefix=norm_prefix, MaxKeys=1)
             
-            # Create folder marker if it doesn't exist
-            if 'Contents' not in resp and 'CommonPrefixes' not in resp:
+            if not self.check_prefix_exists(bucket, norm_prefix):
                 logger.info(f"Creating folder marker: {norm_prefix}")
                 s3.put_object(Bucket=bucket, Key=norm_prefix, Body='')
             
@@ -142,32 +151,64 @@ class S3DirectOps:
             logger.error(f"Error listing objects: {e}")
             sys.exit(1)
     
-    def get_file_timestamp(self, bucket, key):
-        """Get the timestamp of a file."""
+    def get_object_metadata(self, bucket, key, version_id=None):
+        """Get full metadata of an object, optionally for a specific version."""
         try:
-            response = s3.head_object(Bucket=bucket, Key=key)
-            
-            # Check if there's an original timestamp in metadata
-            if 'Metadata' in response and 'original-last-modified' in response['Metadata']:
-                try:
-                    # Try to parse the timestamp from metadata
-                    return datetime.datetime.fromisoformat(response['Metadata']['original-last-modified'])
-                except (ValueError, TypeError):
-                    # If parsing fails, fall back to LastModified
-                    pass
-            
-            return response.get('LastModified')
-        except ClientError as e:
-            logger.error(f"Error getting timestamp for {key}: {e}")
-            return None
-    
-    def get_object_metadata(self, bucket, key):
-        """Get full metadata of an object."""
-        try:
-            return s3.head_object(Bucket=bucket, Key=key)
+            if version_id:
+                return s3.head_object(Bucket=bucket, Key=key, VersionId=version_id)
+            else:
+                return s3.head_object(Bucket=bucket, Key=key)
         except ClientError as e:
             logger.error(f"Error getting metadata for {key}: {e}")
             return None
+    
+    def get_object_tags(self, bucket, key, version_id=None):
+        """Get object tags."""
+        try:
+            if version_id:
+                tags_response = s3.get_object_tagging(
+                    Bucket=bucket, Key=key, VersionId=version_id
+                )
+            else:
+                tags_response = s3.get_object_tagging(Bucket=bucket, Key=key)
+            return tags_response.get('TagSet', [])
+        except Exception as e:
+            logger.warning(f"Could not get tags for {key}: {e}")
+            return []
+    
+    def prepare_copy_args(self, metadata, content_type, content_disposition=None, 
+                         content_encoding=None, cache_control=None):
+        """Prepare common copy arguments."""
+        copy_args = {
+            'MetadataDirective': 'REPLACE',
+            'Metadata': metadata,
+            'ContentType': content_type or 'binary/octet-stream'
+        }
+        
+        # Add optional parameters if they exist
+        if content_disposition:
+            copy_args['ContentDisposition'] = content_disposition
+        if content_encoding:
+            copy_args['ContentEncoding'] = content_encoding
+        if cache_control:
+            copy_args['CacheControl'] = cache_control
+            
+        return copy_args
+    
+    def apply_tags(self, bucket, key, tags):
+        """Apply tags to an object."""
+        if tags:
+            try:
+                s3.put_object_tagging(
+                    Bucket=bucket,
+                    Key=key,
+                    Tagging={'TagSet': tags}
+                )
+                return True
+            except Exception as e:
+                logger.warning(f"Could not apply tags to {key}: {e}")
+                return False
+        return True
     
     def copy_with_metadata_preservation(self, source_bucket, source_key, dest_bucket, dest_key, source_metadata=None):
         """
@@ -199,13 +240,8 @@ class S3DirectOps:
             content_encoding = source_metadata.get('ContentEncoding', '')
             cache_control = source_metadata.get('CacheControl', '')
             
-            # Handle tagging if present
-            try:
-                tags_response = s3.get_object_tagging(Bucket=source_bucket, Key=source_key)
-                tags = tags_response.get('TagSet', [])
-            except Exception as e:
-                logger.warning(f"Could not get tags for {source_key}: {e}")
-                tags = []
+            # Get tags
+            tags = self.get_object_tags(source_bucket, source_key)
             
             # Determine if we need multipart copy based on size
             size = source_metadata.get('ContentLength', 0)
@@ -213,48 +249,43 @@ class S3DirectOps:
             
             if size > MAX_DIRECT_COPY_SIZE:
                 logger.info(f"Large file detected ({size} bytes): using multipart copy")
-                return self._multipart_copy_with_metadata(
+                success = self._multipart_copy_with_metadata(
                     source_bucket, source_key, None, dest_bucket, dest_key,
                     metadata, content_type, content_disposition, content_encoding, cache_control, tags
                 )
             else:
                 # Standard copy with metadata preservation
-                copy_args = {
+                copy_args = self.prepare_copy_args(
+                    metadata, content_type, content_disposition, content_encoding, cache_control
+                )
+                
+                # Add bucket and key information
+                copy_args.update({
                     'Bucket': dest_bucket,
                     'Key': dest_key,
-                    'CopySource': {'Bucket': source_bucket, 'Key': source_key},
-                    'MetadataDirective': 'REPLACE',
-                    'Metadata': metadata,
-                    'ContentType': content_type
-                }
+                    'CopySource': {'Bucket': source_bucket, 'Key': source_key}
+                })
                 
-                # Add optional parameters if they exist
-                if content_disposition:
-                    copy_args['ContentDisposition'] = content_disposition
-                if content_encoding:
-                    copy_args['ContentEncoding'] = content_encoding
-                if cache_control:
-                    copy_args['CacheControl'] = cache_control
-                
+                # Perform the copy
                 s3.copy_object(**copy_args)
                 
-                # Apply tags if any exist
-                if tags:
-                    s3.put_object_tagging(
-                        Bucket=dest_bucket,
-                        Key=dest_key,
-                        Tagging={'TagSet': tags}
-                    )
+                # Apply tags
+                self.apply_tags(dest_bucket, dest_key, tags)
                 
+                success = True
+                
+            if success:
                 logger.info(f"Successfully copied object with metadata: {source_key} → {dest_key}")
                 logger.info(f"  Original timestamp: {source_timestamp}")
                 
                 # Display new timestamp for verification
-                new_timestamp = self.get_file_timestamp(dest_bucket, dest_key)
-                logger.info(f"  New timestamp: {new_timestamp}")
-                logger.info(f"  Original timestamp preserved in metadata as 'original-last-modified'")
+                new_metadata = self.get_object_metadata(dest_bucket, dest_key)
+                if new_metadata:
+                    new_timestamp = new_metadata.get('LastModified')
+                    logger.info(f"  New timestamp: {new_timestamp}")
+                    logger.info(f"  Original timestamp preserved in metadata as 'original-last-modified'")
                 
-                return True
+            return success
         except ClientError as e:
             logger.error(f"Error copying {source_key}: {e}")
             return False
@@ -264,27 +295,22 @@ class S3DirectOps:
         """Helper method for multipart copying of large files with metadata preservation."""
         try:
             # Get size information
-            if version_id:
-                response = s3.head_object(Bucket=source_bucket, Key=source_key, VersionId=version_id)
-            else:
-                response = s3.head_object(Bucket=source_bucket, Key=source_key)
+            response = self.get_object_metadata(source_bucket, source_key, version_id)
+            if not response:
+                return False
+                
             size = response['ContentLength']
             
             # Start multipart upload with metadata
-            mpu_args = {
-                'Bucket': dest_bucket,
-                'Key': dest_key,
-                'Metadata': metadata,
-                'ContentType': content_type
-            }
+            mpu_args = self.prepare_copy_args(
+                metadata, content_type, content_disposition, content_encoding, cache_control
+            )
             
-            # Add optional parameters if they exist
-            if content_disposition:
-                mpu_args['ContentDisposition'] = content_disposition
-            if content_encoding:
-                mpu_args['ContentEncoding'] = content_encoding
-            if cache_control:
-                mpu_args['CacheControl'] = cache_control
+            # Add bucket and key information
+            mpu_args.update({
+                'Bucket': dest_bucket,
+                'Key': dest_key
+            })
             
             mpu = s3.create_multipart_upload(**mpu_args)
             upload_id = mpu['UploadId']
@@ -299,6 +325,7 @@ class S3DirectOps:
                     last_byte = min(offset + part_size - 1, size - 1)
                     range_string = f"bytes={offset}-{last_byte}"
                     logger.info(f"  Copying part {i} ({range_string})...")
+                    
                     copy_source = {'Bucket': source_bucket, 'Key': source_key}
                     if version_id:
                         copy_source['VersionId'] = version_id
@@ -324,13 +351,8 @@ class S3DirectOps:
                     MultipartUpload={'Parts': parts}
                 )
                 
-                # Apply tags if any exist
-                if tags:
-                    s3.put_object_tagging(
-                        Bucket=dest_bucket,
-                        Key=dest_key,
-                        Tagging={'TagSet': tags}
-                    )
+                # Apply tags
+                self.apply_tags(dest_bucket, dest_key, tags)
                 
                 logger.info(f"Multipart copy completed: {source_key} → {dest_key}")
                 return True
@@ -338,9 +360,18 @@ class S3DirectOps:
                 logger.error(f"Error during multipart upload: {e}")
                 s3.abort_multipart_upload(Bucket=dest_bucket, Key=dest_key, UploadId=upload_id)
                 return False
-        except ClientError as e:
+        except Exception as e:
             logger.error(f"Error preparing multipart copy: {e}")
             return False
+    
+    def get_all_versions(self, bucket, key):
+        """Get all versions of an object."""
+        try:
+            response = s3.list_object_versions(Bucket=bucket, Prefix=key)
+            return [v for v in response.get('Versions', []) if v.get('Key') == key]
+        except Exception as e:
+            logger.error(f"Error getting versions for {key}: {e}")
+            return []
     
     def copy_file(self, source_bucket, source_key, dest_bucket, dest_key, current_version_only=False):
         """
@@ -353,7 +384,6 @@ class S3DirectOps:
             if not source_metadata:
                 return False
             
-            # Copy the most recent version with metadata preservation
             if current_version_only:
                 # Copy only the current version
                 return self.copy_with_metadata_preservation(
@@ -363,80 +393,47 @@ class S3DirectOps:
                 # Copy all versions including the current one
                 logger.info(f"Copying all versions of {source_key} → {dest_key}")
                 
-                try:
-                    # List all versions
-                    response = s3.list_object_versions(Bucket=source_bucket, Prefix=source_key)
-                    versions = [v for v in response.get('Versions', []) if v.get('Key') == source_key]
-                    
-                    if not versions:
-                        logger.warning(f"Warning: No versions found for {source_key}")
-                        return False
-                    
-                    # Find the current (non-deleted) version first
-                    current_version = next((v for v in versions if not v.get('IsDeleted', False)), None)
-                    
-                    # First copy the current version to preserve metadata
-                    if current_version:
-                        version_id = current_version.get('VersionId')
-                        # Get this version's metadata
-                        if version_id:
-                            version_metadata = s3.head_object(
-                                Bucket=source_bucket, 
-                                Key=source_key,
-                                VersionId=version_id
-                            )
-                        else:
-                            version_metadata = source_metadata
-                        
-                        # Copy the current version first with metadata preservation
-                        success = self.copy_with_metadata_preservation(
-                            source_bucket, source_key, dest_bucket, dest_key, version_metadata
-                        )
-                        if not success:
-                            return False
-                    
-                    # Copy other versions (if any)
-                    for version in versions:
-                        version_id = version.get('VersionId')
-                        # Skip the current version as we've already copied it
-                        if current_version and version_id == current_version.get('VersionId'):
-                            continue
-                        
-                        # Get this version's metadata
-                        try:
-                            version_metadata = s3.head_object(
-                                Bucket=source_bucket, 
-                                Key=source_key,
-                                VersionId=version_id
-                            )
-                        except Exception as e:
-                            logger.warning(f"Could not get metadata for version {version_id}: {e}")
-                            version_metadata = None
-                        
-                        # Copy this version
-                        size = version.get('Size', 0)
-                        if size > MAX_DIRECT_COPY_SIZE:
-                            logger.info(f"Large file detected: {source_key} (v:{version_id})")
-                            copy_source = {'Bucket': source_bucket, 'Key': source_key, 'VersionId': version_id}
-                            # For older versions, we're less concerned about metadata preservation
-                            s3.copy_object(
-                                Bucket=dest_bucket,
-                                Key=dest_key,
-                                CopySource=copy_source
-                            )
-                        else:
-                            # Standard copy for other versions
-                            copy_source = {'Bucket': source_bucket, 'Key': source_key, 'VersionId': version_id}
-                            s3.copy_object(
-                                Bucket=dest_bucket,
-                                Key=dest_key,
-                                CopySource=copy_source
-                            )
-                    
-                    return True
-                except Exception as e:
-                    logger.error(f"Error copying versions for {source_key}: {e}")
+                # List all versions
+                versions = self.get_all_versions(source_bucket, source_key)
+                
+                if not versions:
+                    logger.warning(f"Warning: No versions found for {source_key}")
                     return False
+                
+                # Find the current (non-deleted) version first
+                current_version = next((v for v in versions if not v.get('IsDeleted', False)), None)
+                
+                # First copy the current version to preserve metadata
+                if current_version:
+                    version_id = current_version.get('VersionId')
+                    # Get this version's metadata
+                    version_metadata = self.get_object_metadata(
+                        source_bucket, source_key, version_id
+                    ) or source_metadata
+                    
+                    # Copy the current version first with metadata preservation
+                    success = self.copy_with_metadata_preservation(
+                        source_bucket, source_key, dest_bucket, dest_key, version_metadata
+                    )
+                    if not success:
+                        return False
+                
+                # Copy other versions (if any)
+                for version in versions:
+                    version_id = version.get('VersionId')
+                    # Skip the current version as we've already copied it
+                    if current_version and version_id == current_version.get('VersionId'):
+                        continue
+                    
+                    # Copy this version
+                    copy_source = {'Bucket': source_bucket, 'Key': source_key, 'VersionId': version_id}
+                    s3.copy_object(
+                        Bucket=dest_bucket,
+                        Key=dest_key,
+                        CopySource=copy_source
+                    )
+                
+                return True
         except ClientError as e:
             logger.error(f"Error copying {source_key}: {e}")
             return False
@@ -454,8 +451,7 @@ class S3DirectOps:
                 logger.info(f"Deleting all versions of {key}")
                 
                 # Get all versions
-                response = s3.list_object_versions(Bucket=bucket, Prefix=key)
-                versions = [v for v in response.get('Versions', []) if v.get('Key') == key]
+                versions = self.get_all_versions(bucket, key)
                 
                 if not versions:
                     logger.warning(f"Warning: No versions found for {key}")
@@ -470,6 +466,17 @@ class S3DirectOps:
         except ClientError as e:
             logger.error(f"Error deleting {key}: {e}")
             return False
+    
+    def calculate_destination_path(self, source_prefix, dest_prefix, file_name, use_merge):
+        """Calculate the destination path for a file."""
+        if use_merge:
+            # When merging, files go directly to the destination folder
+            return f"{self.normalize_prefix(dest_prefix)}{file_name}"
+        else:
+            # When preserving structure, files go to a subfolder named after the source folder
+            source_base = self.get_basename(source_prefix)
+            dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
+            return f"{dest_subfolder}/{file_name}"
     
     def process_files(self, operation, source_bucket, source_prefix, dest_bucket=None, 
                      dest_prefix=None, pattern=None, pattern_type=None, current_version_only=False,
@@ -498,7 +505,7 @@ class S3DirectOps:
                 logger.info("Operation cancelled.")
                 return False
         
-        # Check if destination exists - treats differently for rename vs. move
+        # Check destination for copy/move operations
         dest_exists = False
         if operation in ['copy', 'move']:
             dest_exists = self.check_prefix_exists(dest_bucket, dest_prefix)
@@ -508,6 +515,9 @@ class S3DirectOps:
                 logger.error(f"Error: Could not access or create destination {dest_bucket}/{dest_prefix}")
                 return False
                 
+            # Determine merge mode
+            use_merge = merge or (pattern is not None) or (not dest_exists and operation == 'move')
+            
             # Log the operation type
             if dest_exists:
                 if merge:
@@ -524,47 +534,24 @@ class S3DirectOps:
         success_count = 0
         failed_count = 0
         
+        # Define operation functions
+        op_functions = {
+            'delete': lambda file: self.delete_file(source_bucket, file['Key'], current_version_only),
+            'copy': lambda file: self._process_copy_or_move(file, source_bucket, dest_bucket, source_prefix, dest_prefix, 
+                                                          use_merge, current_version_only, False),
+            'move': lambda file: self._process_copy_or_move(file, source_bucket, dest_bucket, source_prefix, dest_prefix, 
+                                                          use_merge, current_version_only, True)
+        }
+        
+        # Process each file
         for file in matched_files:
-            source_key = file['Key']
-            file_name = file['Name']
-            
-            # Determine path handling mode:
-            # 1. If --merge flag is explicitly given, always merge
-            # 2. If pattern is specified, always merge
-            # 3. If destination does not exist (like a rename), create it directly without subfolder
-            # 4. If destination exists, preserve structure with subfolder
-            use_merge = merge or (pattern is not None) or (not dest_exists and operation == 'move')
-            
-            # Perform the operation
-            if operation == 'delete':
-                success = self.delete_file(source_bucket, source_key, current_version_only)
-            elif operation in ['copy', 'move']:
-                # Calculate destination path
-                if use_merge:
-                    # When merging, files go directly to the destination folder
-                    dest_key = f"{self.normalize_prefix(dest_prefix)}{file_name}"
+            if operation in op_functions:
+                success = op_functions[operation](file)
+                
+                if success:
+                    success_count += 1
                 else:
-                    # When preserving structure, files go to a subfolder named after the source folder
-                    source_base = self.get_basename(source_prefix)
-                    dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
-                    dest_key = f"{dest_subfolder}/{file_name}"
-                    
-                    # Ensure the subfolder exists
-                    self.check_and_create_folder(dest_bucket, dest_subfolder)
-                
-                # Copy the file with our enhanced copy method
-                success = self.copy_file(source_bucket, source_key, dest_bucket, dest_key, current_version_only)
-                
-                # For move, also delete if copy was successful
-                if operation == 'move' and success:
-                    success = self.delete_file(source_bucket, source_key, current_version_only)
-            else:
-                success = False
-            
-            if success:
-                success_count += 1
-            else:
-                failed_count += 1
+                    failed_count += 1
         
         # Create completion message
         version_str = "current versions only" if current_version_only else "all versions"
@@ -580,6 +567,30 @@ class S3DirectOps:
             
         logger.info(f"{operation.capitalize()} operation completed ({version_str}, {path_str}): {success_count} files processed, {failed_count} failed")
         return failed_count == 0
+    
+    def _process_copy_or_move(self, file, source_bucket, dest_bucket, source_prefix, dest_prefix, 
+                             use_merge, current_version_only, is_move):
+        """Helper method to process copy or move operations."""
+        source_key = file['Key']
+        file_name = file['Name']
+        
+        # Calculate destination path
+        dest_key = self.calculate_destination_path(source_prefix, dest_prefix, file_name, use_merge)
+        
+        # Ensure subfolder exists if not merging
+        if not use_merge:
+            source_base = self.get_basename(source_prefix)
+            dest_subfolder = f"{self.normalize_prefix(dest_prefix)}{source_base}"
+            self.check_and_create_folder(dest_bucket, dest_subfolder)
+        
+        # Copy the file
+        success = self.copy_file(source_bucket, source_key, dest_bucket, dest_key, current_version_only)
+        
+        # For move, also delete if copy was successful
+        if is_move and success:
+            success = self.delete_file(source_bucket, source_key, current_version_only)
+            
+        return success
 
 def parse_args():
     """Parse command line arguments."""
