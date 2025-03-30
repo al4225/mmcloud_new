@@ -12,10 +12,9 @@ import re
 from botocore.exceptions import ClientError
 import logging
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO, 
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s %(message)s',
     datefmt='%m-%d %H:%M'
 )
 logger = logging.getLogger(__name__)
@@ -547,42 +546,40 @@ def delete_file(bucket, key, current_version_only=False, dryrun=False):
         logger.error(f"Error deleting {key}: {e}")
         return False
 
-def should_preserve_structure(source_prefix, dest_prefix):
-    """Determine if the directory structure should be preserved based on path analysis"""
-    # Always preserve structure by default
-    return True
-
-def calculate_destination_key(source_key, source_prefix, dest_prefix, preserve_structure=True):
-    """Calculate the destination key, preserving folder structure when needed"""
+def calculate_destination_key(source_key, source_prefix, dest_prefix, merge=False):
+    """Calculate the destination key based on the merge option"""
     norm_source_prefix = normalize_prefix(source_prefix)
     norm_dest_prefix = normalize_prefix(dest_prefix)
     
-    # Get the source folder name
-    source_parts = source_prefix.rstrip('/').split('/')
-    source_folder_name = source_parts[-1] if source_parts else ""
+    source_basename = get_basename(source_prefix)
+    dest_basename = get_basename(dest_prefix)
     
-    # Get the part of the path after the source prefix
+    # If source folder and destination folder have the same name, we always merge
+    # This is the special case mentioned in the requirements
+    folders_have_same_name = source_basename == dest_basename and source_basename and dest_basename
+    
+    # Get the relative path after the source prefix
     if source_key.startswith(norm_source_prefix):
         relative_path = source_key[len(norm_source_prefix):]
-        if preserve_structure:
-            # Always preserve the full folder structure, including the source folder name
-            return f"{norm_dest_prefix}{source_folder_name}/{relative_path}"
+        
+        if merge or folders_have_same_name:
+            # When merging, we put contents directly in the destination folder
+            return f"{norm_dest_prefix}{relative_path}"
         else:
-            # Just preserve the filename for flatten mode
-            filename = os.path.basename(source_key)
-            return f"{norm_dest_prefix}{filename}"
+            # Regular case: create a subfolder with the source's basename
+            return f"{norm_dest_prefix}{source_basename}/{relative_path}"
     else:
         # Fallback if the source key doesn't start with the source prefix
         filename = os.path.basename(source_key)
         return f"{norm_dest_prefix}{filename}"
 
 def process_copy_or_move(file, source_bucket, dest_bucket, source_prefix, dest_prefix,
-                        preserve_structure, current_version_only, is_move, dryrun=False):
+                        merge, current_version_only, is_move, dryrun=False):
     """Process a copy or move operation for a single file"""
     source_key = file['Key']
     
-    # Create the destination key with proper path structure preservation
-    dest_key = calculate_destination_key(source_key, source_prefix, dest_prefix, preserve_structure)
+    # Create the destination key based on the merge option
+    dest_key = calculate_destination_key(source_key, source_prefix, dest_prefix, merge)
     
     # Ensure parent folders exist in the destination
     if '/' in dest_key:
@@ -603,8 +600,7 @@ def process_copy_or_move(file, source_bucket, dest_bucket, source_prefix, dest_p
 
 def process_files(operation, source_bucket, source_prefix, dest_bucket=None, 
                 dest_prefix=None, pattern=None, pattern_type=None, current_version_only=False,
-                preserve_structure=True, dryrun=False, dryrun_count=100):
-    """Main function to process files based on operation type"""
+                merge=False, dryrun=False, dryrun_count=100):
     """Main function to process files based on operation type"""
     # For list operation, just return the matching files
     if operation == 'list':
@@ -665,7 +661,7 @@ def process_files(operation, source_bucket, source_prefix, dest_bucket=None,
                     pattern, 
                     pattern_type, 
                     current_version_only, 
-                    preserve_structure,
+                    merge,
                     dryrun,
                     dryrun_count
                 )
@@ -679,7 +675,6 @@ def process_files(operation, source_bucket, source_prefix, dest_bucket=None,
         logger.warning(f"No files found in '{source_prefix}'")
         return True, []
     
-    # For dryrun mode, display what would be done
     if dryrun:
         display_count = len(matched_files) if dryrun_count == -1 else min(dryrun_count, len(matched_files))
         logger.info(f"[DRYRUN] Would {operation} {len(matched_files)} files. Showing {display_count}:")
@@ -688,7 +683,7 @@ def process_files(operation, source_bucket, source_prefix, dest_bucket=None,
                 break
             if operation in ['copy', 'move']:
                 source_key = file['Key']
-                dest_key = calculate_destination_key(source_key, source_prefix, dest_prefix, preserve_structure)
+                dest_key = calculate_destination_key(source_key, source_prefix, dest_prefix, merge)
                 logger.info(f"  {idx+1}. {source_key} → {dest_key} ({file['Size']} bytes)")
             else:
                 logger.info(f"  {idx+1}. {file['Key']} ({file['Size']} bytes)")
@@ -712,12 +707,10 @@ def process_files(operation, source_bucket, source_prefix, dest_bucket=None,
             logger.error(f"Error: Could not access or create destination {dest_bucket}/{dest_prefix}")
             return False, None
     
-    # If dryrun mode, just return success
     if dryrun:
         logger.info(f"[DRYRUN] Operation completed. No actual changes were made.")
         return True, matched_files
     
-    # Process operations
     success_count = 0
     failed_count = 0
     
@@ -727,10 +720,9 @@ def process_files(operation, source_bucket, source_prefix, dest_bucket=None,
         elif operation in ['copy', 'move']:
             success = process_copy_or_move(
                 file, source_bucket, dest_bucket, source_prefix, dest_prefix,
-                preserve_structure, current_version_only, operation == 'move', dryrun
+                merge, current_version_only, operation == 'move', dryrun
             )
         else:
-            # This shouldn't happen but handle it just in case
             logger.error(f"Unknown operation: {operation}")
             return False, None
             
@@ -741,13 +733,14 @@ def process_files(operation, source_bucket, source_prefix, dest_bucket=None,
     
     # Create completion message
     version_str = "current versions only" if current_version_only else "all versions"
-    structure_str = "preserving folder structure" if preserve_structure else "flattening folder structure"
+    merge_str = "merging contents directly" if merge else "preserving folder structure"
     
     msg_prefix = "[DRYRUN] Would complete" if dryrun else ""
-    logger.info(f"{msg_prefix} {operation.capitalize()} operation ({version_str}, {structure_str}): {success_count} files processed, {failed_count} failed")
+    logger.info(f"{msg_prefix} {operation.capitalize()} operation ({version_str}, {merge_str}): {success_count} files processed, {failed_count} failed")
     
     # Return overall success status
     return failed_count == 0, matched_files
+
 
 def parse_args():
     """Parse command line arguments"""
@@ -770,12 +763,10 @@ def parse_args():
     version_group.add_argument('--current-version-only', action='store_true',
                             help="Only operate on current versions (ignore history)")
     
-    # Path structure options
+    # Path handling option
     path_group = parser.add_argument_group('Path handling')
-    path_group.add_argument('--preserve-structure', action='store_true', default=True,
-                         help="Preserve folder structure when copying/moving files (default: True)")
-    path_group.add_argument('--flatten', action='store_true',
-                         help="Flatten folder structure (don't preserve subfolders)")
+    path_group.add_argument('--merge', action='store_true',
+                         help="Merge contents directly into destination folder without creating subfolders")
     
     # Dryrun option
     dryrun_group = parser.add_argument_group('Dryrun options')
@@ -783,10 +774,6 @@ def parse_args():
                            help="Print operations without executing them. Optional number of items to display (default: 100, -1 for all)")
     
     args = parser.parse_args()
-    
-    # Handle conflicting flatten/preserve options
-    if args.flatten:
-        args.preserve_structure = False
     
     # Set defaults for destination bucket if not specified
     if args.operation in ['copy', 'move'] and not args.dest_bucket:
@@ -820,7 +807,7 @@ def main():
             args.pattern,
             args.pattern_type,
             args.current_version_only,
-            args.preserve_structure,
+            args.merge,
             dryrun,
             dryrun_count
         )
@@ -830,7 +817,6 @@ def main():
             logger.error("One or more file operations failed. Exiting with error.")
             sys.exit(1)
             
-        # For list operation, always return success
         if args.operation == 'list':
             sys.exit(0)
             
