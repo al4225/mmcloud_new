@@ -11,6 +11,7 @@ import sys
 import fnmatch
 import re
 from botocore.exceptions import ClientError
+import datetime
 
 # Initialize S3 client with extended timeout
 s3 = boto3.client('s3', config=boto3.session.Config(connect_timeout=60, read_timeout=60))
@@ -133,129 +134,94 @@ class S3DirectOps:
             print(f"Error listing objects: {e}")
             sys.exit(1)
     
-    def get_object_metadata(self, bucket, key, version_id=None):
-        """Get metadata for an object."""
+    def get_file_timestamp(self, bucket, key):
+        """Get the timestamp of a file."""
         try:
-            params = {
-                'Bucket': bucket,
-                'Key': key
-            }
-            if version_id:
-                params['VersionId'] = version_id
-                
-            response = s3.head_object(**params)
-            return response
+            response = s3.head_object(Bucket=bucket, Key=key)
+            return response.get('LastModified')
         except ClientError as e:
-            print(f"Error getting metadata for {key}: {e}")
-            return {}
-    
+            print(f"Error getting timestamp for {key}: {e}")
+            return None
+            
     def copy_file(self, source_bucket, source_key, dest_bucket, dest_key, current_version_only=False):
-        """Copy a file (with all versions or just current version)."""
+        """Copy a file with timestamp preservation in metadata for current version."""
         try:
             if current_version_only:
-                # Copy only the current version
-                print(f"Copying {source_key} (current version only) → {dest_key}")
+                # Get the original file's timestamp and metadata
+                original_resp = s3.head_object(Bucket=source_bucket, Key=source_key)
+                original_timestamp = original_resp.get('LastModified')
+                if not original_timestamp:
+                    print(f"Warning: Could not get timestamp for {source_key}")
                 
-                # Key difference: For preserving timestamps and metadata completely, use MetadataDirective='COPY'
-                # without any custom metadata handling
-                copy_params = {
-                    'Bucket': dest_bucket, 
-                    'Key': dest_key, 
-                    'CopySource': {
-                        'Bucket': source_bucket,
-                        'Key': source_key
-                    },
-                    'MetadataDirective': 'COPY'  # This is crucial for preserving all metadata
-                }
+                # Prepare metadata with the original timestamp
+                existing_metadata = original_resp.get('Metadata', {})
+                new_metadata = {**existing_metadata, 'original-last-modified': original_timestamp.isoformat()}
                 
-                # Fix for S3 bug: the CopySource needs to be a string, not a dict
-                copy_params['CopySource'] = f"{source_bucket}/{source_key}"
+                # Check file size for direct or multipart copy
+                size = original_resp['ContentLength']
+                if size > MAX_DIRECT_COPY_SIZE:
+                    print(f"Large file detected: {source_key} (current version)")
+                    self._multipart_copy(source_bucket, source_key, None, dest_bucket, dest_key, new_metadata)
+                else:
+                    print(f"Copying {source_key} (current version) → {dest_key}")
+                    s3.copy_object(
+                        Bucket=dest_bucket,
+                        Key=dest_key,
+                        CopySource=f"{source_bucket}/{source_key}",
+                        Metadata=new_metadata,
+                        MetadataDirective='REPLACE'
+                    )
                 
-                s3.copy_object(**copy_params)
+                # For debugging: Compare timestamps
+                after_copy_timestamp = self.get_file_timestamp(dest_bucket, dest_key)
+                if original_timestamp and after_copy_timestamp:
+                    print(f"  Original timestamp: {original_timestamp}")
+                    print(f"  New timestamp:      {after_copy_timestamp}")
+                    print(f"  Original timestamp preserved in metadata as 'original-last-modified'")
+                    if original_timestamp.timestamp() != after_copy_timestamp.timestamp():
+                        print(f"  Note: 'LastModified' timestamp updated by S3, use metadata for original time")
+                
                 return True
             else:
-                # Copy all versions
-                return self.copy_with_versions(source_bucket, source_key, dest_bucket, dest_key)
-        except ClientError as e:
-            print(f"Error copying {source_key}: {e}")
-            return False
-    
-    def copy_with_versions(self, source_bucket, source_key, dest_bucket, dest_key):
-        """Copy a file with all its versions."""
-        try:
-            # Get all versions
-            response = s3.list_object_versions(Bucket=source_bucket, Prefix=source_key)
-            versions = [v for v in response.get('Versions', []) if v.get('Key') == source_key]
-            
-            if not versions:
-                print(f"Warning: No versions found for {source_key}")
-                return False
-            
-            # Copy each version
-            for version in versions:
-                version_id = version.get('VersionId')
-                size = version.get('Size', 0)
-                
-                if size > MAX_DIRECT_COPY_SIZE:
-                    # Use multipart copy for large files
-                    print(f"Large file detected: {source_key} (v:{version_id})")
-                    self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key)
-                else:
-                    # Standard copy for regular files
-                    print(f"Copying {source_key} (v:{version_id}) → {dest_key}")
-                    
-                    # Fix: Format CopySource as a string for version-specific copy
-                    copy_source = f"{source_bucket}/{source_key}?versionId={version_id}"
-                    
-                    s3.copy_object(
-                        Bucket=dest_bucket, 
-                        Key=dest_key, 
-                        CopySource=copy_source,
-                        MetadataDirective='COPY'  # Preserve all metadata including timestamps
-                    )
-            
-            return True
-            
+                print(f"Copying all versions of {source_key} → {dest_key}")
+                response = s3.list_object_versions(Bucket=source_bucket, Prefix=source_key)
+                versions = [v for v in response.get('Versions', []) if v.get('Key') == source_key]
+                if not versions:
+                    print(f"Warning: No versions found for {source_key}")
+                    return False
+                for version in versions:
+                    version_id = version.get('VersionId')
+                    size = version.get('Size', 0)
+                    if size > MAX_DIRECT_COPY_SIZE:
+                        print(f"Large file detected: {source_key} (v:{version_id})")
+                        self._multipart_copy(source_bucket, source_key, version_id, dest_bucket, dest_key)
+                    else:
+                        s3.copy_object(
+                            Bucket=dest_bucket,
+                            Key=dest_key,
+                            CopySource=f"{source_bucket}/{source_key}?versionId={version_id}"
+                        )
+                return True
         except ClientError as e:
             print(f"Error copying {source_key}: {e}")
             return False
     
     def _multipart_copy(self, source_bucket, source_key, version_id, dest_bucket, dest_key, metadata=None):
-        """Helper method for multipart copying of large files."""
+        """Helper method for multipart copying of large files with optional metadata."""
         try:
-            # Get original object metadata to preserve timestamps
-            if not metadata:
-                original_metadata = self.get_object_metadata(source_bucket, source_key, version_id)
-                metadata = original_metadata
-            
             # Get size information
-            size = metadata.get('ContentLength', 0)
-            if size == 0:
-                # Fallback if metadata doesn't have size
-                response = s3.head_object(
-                    Bucket=source_bucket, 
-                    Key=source_key,
-                    VersionId=version_id
-                )
-                size = response['ContentLength']
+            if version_id:
+                response = s3.head_object(Bucket=source_bucket, Key=source_key, VersionId=version_id)
+            else:
+                response = s3.head_object(Bucket=source_bucket, Key=source_key)
+            size = response['ContentLength']
             
-            # Start multipart upload with metadata to preserve timestamps
-            mpu_params = {
-                'Bucket': dest_bucket,
-                'Key': dest_key,
-                # Copy all metadata including content type, custom metadata, etc.
-                'ContentType': metadata.get('ContentType', 'application/octet-stream'),
-                'Metadata': metadata.get('Metadata', {}),
-                'CacheControl': metadata.get('CacheControl', ''),
-                'ContentDisposition': metadata.get('ContentDisposition', ''),
-                'ContentEncoding': metadata.get('ContentEncoding', ''),
-                'ContentLanguage': metadata.get('ContentLanguage', '')
-            }
-            
-            # Remove any None values that could cause API errors
-            mpu_params = {k: v for k, v in mpu_params.items() if v}
-            
-            mpu = s3.create_multipart_upload(**mpu_params)
+            # Start multipart upload with metadata if provided
+            mpu = s3.create_multipart_upload(
+                Bucket=dest_bucket,
+                Key=dest_key,
+                Metadata=metadata or {}
+            )
             upload_id = mpu['UploadId']
             
             # Calculate optimal part size (10MB minimum)
@@ -267,14 +233,10 @@ class S3DirectOps:
                 for i, offset in enumerate(range(0, size, part_size), 1):
                     last_byte = min(offset + part_size - 1, size - 1)
                     range_string = f"bytes={offset}-{last_byte}"
-                    
                     print(f"  Copying part {i} ({range_string})...")
-                    
-                    # Use string format for CopySource
                     copy_source = f"{source_bucket}/{source_key}"
                     if version_id:
                         copy_source += f"?versionId={version_id}"
-                    
                     part = s3.upload_part_copy(
                         Bucket=dest_bucket,
                         Key=dest_key,
@@ -283,7 +245,6 @@ class S3DirectOps:
                         CopySourceRange=range_string,
                         PartNumber=i
                     )
-                    
                     parts.append({
                         'PartNumber': i,
                         'ETag': part['CopyPartResult']['ETag']
@@ -298,17 +259,10 @@ class S3DirectOps:
                 )
                 print(f"Multipart copy completed: {source_key} → {dest_key}")
                 return True
-                
             except Exception as e:
-                # Abort on failure
                 print(f"Error during multipart upload: {e}")
-                s3.abort_multipart_upload(
-                    Bucket=dest_bucket,
-                    Key=dest_key,
-                    UploadId=upload_id
-                )
+                s3.abort_multipart_upload(Bucket=dest_bucket, Key=dest_key, UploadId=upload_id)
                 return False
-                
         except ClientError as e:
             print(f"Error preparing multipart copy: {e}")
             return False
@@ -323,30 +277,22 @@ class S3DirectOps:
                 return True
             else:
                 # Delete all versions
-                return self.delete_with_versions(bucket, key)
-        except ClientError as e:
-            print(f"Error deleting {key}: {e}")
-            return False
-    
-    def delete_with_versions(self, bucket, key):
-        """Delete a file with all its versions."""
-        try:
-            # Get all versions
-            response = s3.list_object_versions(Bucket=bucket, Prefix=key)
-            versions = [v for v in response.get('Versions', []) if v.get('Key') == key]
-            
-            if not versions:
-                print(f"Warning: No versions found for {key}")
-                return False
-            
-            # Delete each version
-            for version in versions:
-                version_id = version.get('VersionId')
-                print(f"Deleting {key} (v:{version_id})")
-                s3.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
-            
-            return True
-            
+                print(f"Deleting all versions of {key}")
+                
+                # Get all versions
+                response = s3.list_object_versions(Bucket=bucket, Prefix=key)
+                versions = [v for v in response.get('Versions', []) if v.get('Key') == key]
+                
+                if not versions:
+                    print(f"Warning: No versions found for {key}")
+                    return False
+                
+                # Delete each version
+                for version in versions:
+                    version_id = version.get('VersionId')
+                    s3.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
+                
+                return True
         except ClientError as e:
             print(f"Error deleting {key}: {e}")
             return False
