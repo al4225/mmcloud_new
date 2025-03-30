@@ -1,32 +1,37 @@
 #!/usr/bin/env python3
-# Copyright 2025 Achyutha Harish, MemVerge Inc.
-# With edits from Gao Wang via claude.ai
 """
-S3 Versioned Operations Tool - Manages all versions of objects in S3 buckets.
-Supports copy, move, and delete operations with proper version handling.
-Handles large files using multipart upload and supports pattern matching.
+S3 Direct File Operations - For copying, moving, or deleting direct files in S3 folders
+Copyright 2025 Achyutha Harish, MemVerge Inc.
+With edits from Gao Wang via claude.ai
 """
 
 import boto3
 import argparse
 import os
 import sys
-import re
 import fnmatch
+import re
 from botocore.exceptions import ClientError
 
-# Initialize S3 client
-s3 = boto3.client('s3')
+# Initialize S3 client with extended timeout
+s3 = boto3.client('s3', config=boto3.session.Config(connect_timeout=60, read_timeout=60))
 # Max size for direct copy (4GB)
 MAX_DIRECT_COPY_SIZE = 4 * 1024 * 1024 * 1024
 
-class S3VersionedOps:
-    """Class to handle versioned S3 operations."""
+class S3DirectOps:
+    """S3 operations for direct folder contents only."""
     
     @staticmethod
     def strip_slashes(path):
         """Remove leading and trailing slashes from a path."""
         return path.lstrip('/').rstrip('/')
+    
+    @staticmethod
+    def ensure_prefix_format(prefix):
+        """Ensure the prefix is properly formatted (with trailing slash if not empty)."""
+        if not prefix:
+            return ''
+        return S3DirectOps.strip_slashes(prefix) + '/'
     
     @staticmethod
     def check_bucket(bucket_name):
@@ -35,49 +40,24 @@ class S3VersionedOps:
             s3.head_bucket(Bucket=bucket_name)
             return True
         except ClientError as e:
-            error_code = e.response['Error']['Code']
-            if error_code == '404':
-                print(f"Error: Bucket '{bucket_name}' does not exist")
-            elif error_code == '403':
-                print(f"Error: No permission to access bucket '{bucket_name}'")
-            else:
-                print(f"Error accessing bucket '{bucket_name}': {e}")
+            print(f"Error: Cannot access bucket '{bucket_name}': {e}")
             return False
-    
-    @staticmethod
-    def check_prefix(bucket, prefix):
-        """Check if a prefix exists in the bucket."""
-        prefix = S3VersionedOps.strip_slashes(prefix) + '/'
-        resp = s3.list_objects_v2(Bucket=bucket, Prefix=prefix, MaxKeys=1)
-        return 'Contents' in resp or 'CommonPrefixes' in resp
     
     @staticmethod
     def create_folder(bucket, prefix):
         """Create an empty marker object for a folder."""
-        prefix = S3VersionedOps.strip_slashes(prefix) + '/'
+        prefix = S3DirectOps.ensure_prefix_format(prefix)
         print(f"Creating folder marker: {prefix}")
         try:
             s3.put_object(Bucket=bucket, Key=prefix, Body='')
+            return True
         except ClientError as e:
             print(f"Error creating folder marker '{prefix}': {e}")
-            sys.exit(1)
-    
+            return False
+
     @staticmethod
-    def match_pattern(key, pattern, pattern_type):
-        """
-        Match a key against a pattern using the specified pattern type.
-        
-        Args:
-            key (str): The S3 key (filename) to check
-            pattern (str): The pattern to match against
-            pattern_type (str): Type of pattern matching ('glob', 'regex', or 'exact')
-            
-        Returns:
-            bool: True if the key matches, False otherwise
-        """
-        # Extract just the filename from the key for matching
-        filename = os.path.basename(key)
-        
+    def match_pattern(filename, pattern, pattern_type):
+        """Match a filename against a pattern."""
         if pattern_type == 'glob':
             return fnmatch.fnmatch(filename, pattern)
         elif pattern_type == 'regex':
@@ -85,63 +65,147 @@ class S3VersionedOps:
         elif pattern_type == 'exact':
             return filename == pattern
         else:
-            # Default to glob if unspecified
             return fnmatch.fnmatch(filename, pattern)
     
-    def list_versions(self, bucket, prefix, pattern=None, pattern_type=None):
+    def list_direct_files(self, bucket, prefix, pattern=None, pattern_type=None):
         """
-        List all versions of objects under a prefix, optionally filtered by pattern.
-        
-        Args:
-            bucket (str): Bucket name
-            prefix (str): Prefix to list objects under
-            pattern (str, optional): Pattern to filter files
-            pattern_type (str, optional): Type of pattern ('glob', 'regex', 'exact')
-            
-        Returns:
-            list: List of version objects that match the criteria
+        List only direct files (not folders) within a prefix.
         """
-        prefix = self.strip_slashes(prefix)
-        paginator = s3.get_paginator('list_object_versions')
-        versions = []
+        normalized_prefix = self.ensure_prefix_format(prefix)
+        print(f"Listing direct files in '{normalized_prefix}'...")
         
         try:
-            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-                for v in page.get('Versions', []):
-                    # Only add to results if there's no pattern or the key matches the pattern
-                    key = v['Key']
-                    
-                    # Skip folder markers if pattern is specified
-                    # (only apply pattern to actual files)
-                    if pattern and key.endswith('/'):
-                        continue
-                        
-                    if not pattern or self.match_pattern(key, pattern, pattern_type):
-                        versions.append({
-                            'Key': key,
-                            'VersionId': v['VersionId'],
-                            'Size': v.get('Size', 0)
-                        })
-        except ClientError as e:
-            print(f"Error accessing bucket '{bucket}': {e}")
-            sys.exit(1)
+            # List all objects under the prefix with delimiter
+            response = s3.list_objects_v2(
+                Bucket=bucket,
+                Prefix=normalized_prefix,
+                Delimiter='/'  # Key parameter for direct-only listing
+            )
             
-        if not versions:
+            matched_files = []
+            
+            # Process files (direct children only)
+            for obj in response.get('Contents', []):
+                key = obj.get('Key')
+                
+                # Skip the folder marker itself
+                if key == normalized_prefix:
+                    continue
+                
+                # Extract just the filename for matching
+                file_name = os.path.basename(key)
+                
+                # Apply pattern matching if needed
+                if not pattern or self.match_pattern(file_name, pattern, pattern_type):
+                    matched_files.append({
+                        'Key': key,
+                        'Size': obj.get('Size', 0),
+                        'Name': file_name
+                    })
+            
+            # Count folders too, for informational purposes
+            folder_count = len(response.get('CommonPrefixes', []))
+            
+            print(f"Found {len(matched_files)} matching files and {folder_count} folders")
+            
             if pattern:
-                print(f"Error: No objects found matching pattern '{pattern}' under prefix '{prefix}' in bucket '{bucket}'")
-            else:
-                print(f"Error: No objects found with prefix '{prefix}' in bucket '{bucket}'")
-            print("Please check that the source exists and you have permission to access it.")
-            sys.exit(1)
+                print(f"Files matching pattern '{pattern}':")
+                for file in matched_files:
+                    print(f"  - {file['Name']}")
             
-        return versions
-
-    def multipart_copy(self, source_bucket, source_key, source_version_id, 
-                       dest_bucket, dest_key):
-        """
-        Copy a large object using multipart upload.
-        This handles objects larger than 5GB which can't be copied directly.
-        """
+            if pattern and not matched_files:
+                print(f"No files match the pattern '{pattern}'")
+                sys.exit(1)
+                
+            return matched_files
+            
+        except ClientError as e:
+            print(f"Error listing objects: {e}")
+            sys.exit(1)
+    
+    def get_object_versions(self, bucket, key):
+        """Get all versions of a specific object."""
+        try:
+            response = s3.list_object_versions(
+                Bucket=bucket,
+                Prefix=key
+            )
+            
+            versions = []
+            for version in response.get('Versions', []):
+                if version.get('Key') == key:
+                    versions.append({
+                        'Key': key,
+                        'VersionId': version.get('VersionId'),
+                        'Size': version.get('Size', 0)
+                    })
+            
+            return versions
+        except ClientError as e:
+            print(f"Error getting versions for {key}: {e}")
+            sys.exit(1)
+    
+    def copy_file(self, source_bucket, source_key, dest_bucket, dest_key, version_id=None):
+        """Copy a file (with optional specific version)."""
+        try:
+            # Get versions if not specified
+            versions = []
+            if version_id:
+                # Use the specified version
+                versions = [{
+                    'Key': source_key,
+                    'VersionId': version_id,
+                    'Size': 0  # Will get size from head_object if needed
+                }]
+            else:
+                # Get all versions of the file
+                versions = self.get_object_versions(source_bucket, source_key)
+            
+            # Copy each version
+            for version in versions:
+                source_version_id = version.get('VersionId')
+                source_size = version.get('Size', 0)
+                
+                # Get size if not provided
+                if source_size == 0:
+                    try:
+                        response = s3.head_object(
+                            Bucket=source_bucket,
+                            Key=source_key,
+                            VersionId=source_version_id
+                        )
+                        source_size = response.get('ContentLength', 0)
+                    except ClientError:
+                        # If can't get size, assume it's small
+                        source_size = 0
+                
+                # Choose copy method based on size
+                if source_size > MAX_DIRECT_COPY_SIZE:
+                    self.copy_large_file(source_bucket, source_key, source_version_id, 
+                                        dest_bucket, dest_key)
+                else:
+                    print(f"Copying {source_key} (v:{source_version_id}) → {dest_key}")
+                    copy_source = {
+                        'Bucket': source_bucket,
+                        'Key': source_key
+                    }
+                    if source_version_id:
+                        copy_source['VersionId'] = source_version_id
+                        
+                    s3.copy_object(
+                        Bucket=dest_bucket,
+                        Key=dest_key,
+                        CopySource=copy_source
+                    )
+            
+            return True
+        except ClientError as e:
+            print(f"Error copying {source_key}: {e}")
+            return False
+    
+    def copy_large_file(self, source_bucket, source_key, source_version_id, 
+                        dest_bucket, dest_key):
+        """Copy a large file using multipart upload."""
         print(f"Large file detected, using multipart copy for {source_key}...")
         
         # Get object metadata to check size
@@ -154,7 +218,7 @@ class S3VersionedOps:
             size = response['ContentLength']
         except ClientError as e:
             print(f"Error getting object metadata: {e}")
-            sys.exit(1)
+            return False
         
         # Initiate multipart upload
         try:
@@ -162,7 +226,7 @@ class S3VersionedOps:
             upload_id = mpu['UploadId']
         except ClientError as e:
             print(f"Error initiating multipart upload: {e}")
-            sys.exit(1)
+            return False
         
         # Calculate part size (10MB minimum)
         part_size = max(10 * 1024 * 1024, (size // 10000) + 1)
@@ -170,6 +234,7 @@ class S3VersionedOps:
         # Copy parts
         parts = []
         part_number = 1
+        success = True
         
         for offset in range(0, size, part_size):
             last_byte = min(offset + part_size - 1, size - 1)
@@ -199,228 +264,161 @@ class S3VersionedOps:
                 part_number += 1
             except ClientError as e:
                 print(f"Error copying part {part_number}: {e}")
-                # Abort the multipart upload
+                success = False
+                break
+        
+        # Complete or abort the multipart upload
+        if success and parts:
+            try:
+                s3.complete_multipart_upload(
+                    Bucket=dest_bucket,
+                    Key=dest_key,
+                    UploadId=upload_id,
+                    MultipartUpload={'Parts': parts}
+                )
+                print(f"Multipart copy completed successfully: {source_key} → {dest_key}")
+                return True
+            except ClientError as e:
+                print(f"Error completing multipart upload: {e}")
+                success = False
+        
+        # Abort if any part failed
+        if not success:
+            try:
                 s3.abort_multipart_upload(
                     Bucket=dest_bucket,
                     Key=dest_key,
                     UploadId=upload_id
                 )
-                sys.exit(1)
-        
-        # Complete the multipart upload
-        try:
-            s3.complete_multipart_upload(
-                Bucket=dest_bucket,
-                Key=dest_key,
-                UploadId=upload_id,
-                MultipartUpload={'Parts': parts}
-            )
-            print(f"Multipart copy completed successfully: {source_key} -> {dest_key}")
-        except ClientError as e:
-            print(f"Error completing multipart upload: {e}")
-            # Abort the multipart upload
-            s3.abort_multipart_upload(
-                Bucket=dest_bucket,
-                Key=dest_key,
-                UploadId=upload_id
-            )
-            sys.exit(1)
-    
-    def copy_object(self, source_bucket, source_key, source_version_id, source_size,
-                   dest_bucket, dest_key):
-        """Copy a single object with error handling and size check."""
-        # For large files, use multipart copy
-        if source_size > MAX_DIRECT_COPY_SIZE:
-            self.multipart_copy(source_bucket, source_key, source_version_id,
-                              dest_bucket, dest_key)
-        else:
-            # Standard copy for smaller objects
-            try:
-                print(f"Copying {source_key} (v:{source_version_id}) -> {dest_key}")
-                s3.copy_object(
-                    Bucket=dest_bucket, 
-                    Key=dest_key, 
-                    CopySource={
-                        'Bucket': source_bucket,
-                        'Key': source_key,
-                        'VersionId': source_version_id
-                    }
-                )
+                print(f"Multipart upload aborted for {dest_key}")
             except ClientError as e:
-                print(f"Error copying {source_key}: {e}")
-                sys.exit(1)
+                print(f"Error aborting multipart upload: {e}")
+            return False
     
-    def copy(self, source_bucket, source_prefix, dest_bucket, dest_prefix, 
-            merge=False, pattern=None, pattern_type=None):
-        """
-        Copy all versioned objects from source to destination, optionally filtered by pattern.
-        
-        Args:
-            source_bucket (str): Source bucket name
-            source_prefix (str): Source prefix (folder path)
-            dest_bucket (str): Destination bucket name
-            dest_prefix (str): Destination prefix (folder path)
-            merge (bool, optional): If True, merge into destination without preserving source folder
-            pattern (str, optional): Pattern to filter files
-            pattern_type (str, optional): Type of pattern ('glob', 'regex', 'exact')
-        """
+    def delete_file(self, bucket, key, delete_all_versions=True):
+        """Delete a file and optionally all its versions."""
+        try:
+            if delete_all_versions:
+                versions = self.get_object_versions(bucket, key)
+                for version in versions:
+                    version_id = version.get('VersionId')
+                    print(f"Deleting {key} (v:{version_id})")
+                    s3.delete_object(
+                        Bucket=bucket,
+                        Key=key,
+                        VersionId=version_id
+                    )
+            else:
+                print(f"Deleting {key} (latest version)")
+                s3.delete_object(
+                    Bucket=bucket,
+                    Key=key
+                )
+            return True
+        except ClientError as e:
+            print(f"Error deleting {key}: {e}")
+            return False
+
+    def copy_files_with_pattern(self, source_bucket, source_prefix, dest_bucket, dest_prefix,
+                              pattern=None, pattern_type=None):
+        """Copy files matching a pattern from source to destination."""
+        # Normalize prefixes
         source_prefix = self.strip_slashes(source_prefix)
         dest_prefix = self.strip_slashes(dest_prefix)
         
-        # Check if source exists
-        if not self.check_prefix(source_bucket, source_prefix):
-            print(f"Error: Source prefix '{source_prefix}' does not exist in bucket '{source_bucket}'")
-            sys.exit(1)
+        # Ensure destination folder exists
+        if not self.create_folder(dest_bucket, dest_prefix):
+            print(f"Could not create destination folder: {dest_prefix}")
+            return False
         
-        # Create destination if needed
-        if not self.check_prefix(dest_bucket, dest_prefix):
-            self.create_folder(dest_bucket, dest_prefix)
+        # List files matching the pattern (direct files only)
+        matched_files = self.list_direct_files(source_bucket, source_prefix, pattern, pattern_type)
         
-        # Get all matching versions
-        versions = self.list_versions(source_bucket, source_prefix, pattern, pattern_type)
-        source_base = os.path.basename(source_prefix)
+        if not matched_files:
+            print("No matching files to copy.")
+            return False
         
-        # Count matching files
-        file_count = len([v for v in versions if not v['Key'].endswith('/')])
-        print(f"Found {file_count} files matching criteria")
+        # Copy each matched file
+        success_count = 0
+        failed_count = 0
         
-        # Determine the destination path
-        full_dest_prefix = dest_prefix
-        if not merge and not dest_prefix.endswith('/' + source_base):
-            full_dest_prefix = os.path.join(dest_prefix, source_base)
-        
-        # Keep track of processed files for reporting
-        processed_count = 0
-        
-        for v in versions:
-            src_key = v['Key']
-            src_version_id = v['VersionId']
-            src_size = v.get('Size', 0)
+        for file in matched_files:
+            source_key = file['Key']
+            file_name = file['Name']
             
-            # Skip folder markers if pattern is specified
-            if pattern and src_key.endswith('/'):
-                continue
-                
-            # Calculate destination key
-            if src_key.startswith(source_prefix + '/'):
-                # File inside subfolder
-                rel_path = src_key[len(source_prefix) + 1:]
-                dst_key = os.path.join(full_dest_prefix, rel_path)
-            elif src_key == source_prefix:
-                # Folder marker
-                if not merge:
-                    dst_key = full_dest_prefix
-                else:
-                    continue  # Skip folder marker in merge mode
+            # Calculate destination key (just append filename to destination prefix)
+            dest_key = f"{dest_prefix}/{file_name}"
+            
+            # Copy the file with all its versions
+            if self.copy_file(source_bucket, source_key, dest_bucket, dest_key):
+                success_count += 1
             else:
-                # Edge case
-                rel_path = src_key[len(source_prefix):].lstrip('/')
-                dst_key = os.path.join(full_dest_prefix, rel_path)
-                
-            # Use forward slashes for S3
-            dst_key = dst_key.replace('\\', '/')
-            
-            # Copy the object (exit on error)
-            self.copy_object(source_bucket, src_key, src_version_id, src_size,
-                           dest_bucket, dst_key)
-            processed_count += 1
+                failed_count += 1
         
-        print(f"Copy operation completed successfully. Copied {processed_count} files.")
-        return True
+        print(f"Copy operation completed: {success_count} files copied, {failed_count} failed")
+        return failed_count == 0
     
-    def delete_object(self, bucket, key, version_id):
-        """Delete a single object with error handling."""
-        try:
-            print(f"Deleting {key} (v:{version_id})")
-            s3.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
-        except ClientError as e:
-            print(f"Error deleting {key}: {e}")
-            sys.exit(1)
-    
-    def delete(self, bucket, prefix, pattern=None, pattern_type=None):
-        """
-        Delete all versioned objects under a prefix, optionally filtered by pattern.
-        
-        Args:
-            bucket (str): Bucket name
-            prefix (str): Prefix to delete objects under
-            pattern (str, optional): Pattern to filter files
-            pattern_type (str, optional): Type of pattern ('glob', 'regex', 'exact')
-        """
+    def delete_files_with_pattern(self, bucket, prefix, pattern=None, pattern_type=None):
+        """Delete files matching a pattern."""
+        # Normalize prefix
         prefix = self.strip_slashes(prefix)
         
-        # Check if prefix exists
-        if not self.check_prefix(bucket, prefix):
-            print(f"Error: Prefix '{prefix}' does not exist in bucket '{bucket}'")
-            sys.exit(1)
+        # List files matching the pattern (direct files only)
+        matched_files = self.list_direct_files(bucket, prefix, pattern, pattern_type)
         
-        # Get all matching versions
-        versions = self.list_versions(bucket, prefix, pattern, pattern_type)
+        if not matched_files:
+            print("No matching files to delete.")
+            return False
         
-        # Count matching files
-        file_count = len([v for v in versions if not v['Key'].endswith('/')])
-        print(f"Found {file_count} files matching criteria for deletion")
-        
-        # Ask for confirmation if deleting with a pattern
+        # Ask for confirmation
+        file_count = len(matched_files)
         if pattern:
             confirmation = input(f"Are you sure you want to delete {file_count} files matching '{pattern}'? (y/n): ")
             if confirmation.lower() != 'y':
                 print("Operation cancelled.")
-                sys.exit(0)
+                return False
         
-        # Process deletions
-        processed_count = 0
+        # Delete each matched file
+        success_count = 0
+        failed_count = 0
         
-        for v in versions:
-            # Skip folder markers if pattern is specified
-            if pattern and v['Key'].endswith('/'):
-                continue
-                
-            self.delete_object(bucket, v['Key'], v['VersionId'])
-            processed_count += 1
+        for file in matched_files:
+            source_key = file['Key']
+            
+            # Delete the file with all its versions
+            if self.delete_file(bucket, source_key):
+                success_count += 1
+            else:
+                failed_count += 1
         
-        print(f"Delete operation completed successfully. Deleted {processed_count} files.")
-        return True
+        print(f"Delete operation completed: {success_count} files deleted, {failed_count} failed")
+        return failed_count == 0
     
-    def move(self, source_bucket, source_prefix, dest_bucket, dest_prefix, 
-            merge=False, pattern=None, pattern_type=None):
-        """
-        Move objects (copy and then delete if successful), optionally filtered by pattern.
+    def move_files_with_pattern(self, source_bucket, source_prefix, dest_bucket, dest_prefix,
+                              pattern=None, pattern_type=None):
+        """Move files matching a pattern from source to destination."""
+        # First copy the files
+        copy_result = self.copy_files_with_pattern(
+            source_bucket, source_prefix, dest_bucket, dest_prefix, pattern, pattern_type
+        )
         
-        Args:
-            source_bucket (str): Source bucket name
-            source_prefix (str): Source prefix (folder path)
-            dest_bucket (str): Destination bucket name
-            dest_prefix (str): Destination prefix (folder path)
-            merge (bool, optional): If True, merge into destination without preserving source folder
-            pattern (str, optional): Pattern to filter files
-            pattern_type (str, optional): Type of pattern ('glob', 'regex', 'exact')
-        """
-        # First copy matching files
-        self.copy(source_bucket, source_prefix, dest_bucket, dest_prefix, 
-                 merge, pattern, pattern_type)
-        
-        # Then delete the matching files from source
-        print("Copy phase successful. Starting delete phase...")
-        
-        # If we're moving all files (no pattern), just delete the whole prefix
-        if not pattern:
-            self.delete(source_bucket, source_prefix)
+        # Only delete if copy was successful
+        if copy_result:
+            print("Copy completed successfully. Starting delete phase...")
+            return self.delete_files_with_pattern(source_bucket, source_prefix, pattern, pattern_type)
         else:
-            # Otherwise, only delete the files that match the pattern
-            self.delete(source_bucket, source_prefix, pattern, pattern_type)
+            print("Copy operation had errors. Skipping delete phase to prevent data loss.")
+            return False
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="S3 Versioned Operations Tool")
-    parser.add_argument('--operation', choices=['copy', 'move', 'delete'], 
+    parser = argparse.ArgumentParser(description="S3 Direct File Operations with Pattern Matching")
+    parser.add_argument('--operation', choices=['copy', 'move', 'delete', 'list'], 
                         required=True, help="Operation to perform")
     parser.add_argument('--source-bucket', required=True, help="Source bucket name")
     parser.add_argument('--source-prefix', required=True, help="Source prefix (folder path)")
     parser.add_argument('--dest-bucket', help="Destination bucket name (for copy/move)")
     parser.add_argument('--dest-prefix', help="Destination prefix (for copy/move)")
-    parser.add_argument('--merge', action='store_true', 
-                        help="Merge contents of source into destination (for copy/move)")
     
     # Pattern matching options
     pattern_group = parser.add_argument_group('Pattern matching')
@@ -433,24 +431,15 @@ def parse_args():
 def main():
     """Main entry point for the script."""
     args = parse_args()
+    s3ops = S3DirectOps()
     
-    # Set defaults and clean paths
-    s3ops = S3VersionedOps()
-    args.source_prefix = s3ops.strip_slashes(args.source_prefix)
-    
+    # Set defaults
     if not args.dest_bucket:
         args.dest_bucket = args.source_bucket
-    
-    if args.dest_prefix:
-        args.dest_prefix = s3ops.strip_slashes(args.dest_prefix)
     
     # Validate arguments
     if args.operation in ['copy', 'move'] and (not args.dest_bucket or not args.dest_prefix):
         print("Error: --dest-bucket and --dest-prefix are required for copy/move operations")
-        sys.exit(1)
-    
-    if args.operation == 'delete' and args.merge:
-        print("Error: --merge option is only applicable to copy/move operations")
         sys.exit(1)
     
     # Check buckets exist
@@ -461,28 +450,26 @@ def main():
         if not s3ops.check_bucket(args.dest_bucket):
             sys.exit(1)
     
-    # For rename operations, use merge-like behavior when destination doesn't exist
-    use_merge = args.merge
-    if (args.operation == 'move' and 
-            not s3ops.check_prefix(args.dest_bucket, args.dest_prefix)):
-        use_merge = True
-    
     # Perform the requested operation
     try:
-        if args.operation == 'copy':
-            s3ops.copy(
-                args.source_bucket, args.source_prefix, 
-                args.dest_bucket, args.dest_prefix, 
-                args.merge, args.pattern, args.pattern_type
+        if args.operation == 'list':
+            # Just list the files
+            s3ops.list_direct_files(args.source_bucket, args.source_prefix, 
+                                  args.pattern, args.pattern_type)
+        elif args.operation == 'copy':
+            s3ops.copy_files_with_pattern(
+                args.source_bucket, args.source_prefix,
+                args.dest_bucket, args.dest_prefix,
+                args.pattern, args.pattern_type
             )
         elif args.operation == 'move':
-            s3ops.move(
-                args.source_bucket, args.source_prefix, 
-                args.dest_bucket, args.dest_prefix, 
-                use_merge, args.pattern, args.pattern_type
+            s3ops.move_files_with_pattern(
+                args.source_bucket, args.source_prefix,
+                args.dest_bucket, args.dest_prefix,
+                args.pattern, args.pattern_type
             )
         elif args.operation == 'delete':
-            s3ops.delete(
+            s3ops.delete_files_with_pattern(
                 args.source_bucket, args.source_prefix,
                 args.pattern, args.pattern_type
             )
