@@ -26,7 +26,7 @@ This is useful when working with versioned S3 buckets where standard `aws s3 cp`
 ## Usage
 
 ```bash
-python s3-version-copy.py \
+python version-aware-cleanup.py \
   --operation <copy|move|delete> \
   --source-bucket <bucket-name> \
   --source-prefix <path/in/bucket/> \
@@ -57,7 +57,7 @@ python s3-version-copy.py \
 Copy all versions from `ftp_fgc_xqtl/20250218_ADSP_LD_matrix_APOEblocks_merge` to `ftp_fgc_xqtl/resource/20240409_ADSP_LD_matrix`, preserving the complete folder structure:
 
 ```bash
-python s3-version-copy.py \
+python version-aware-cleanup.py \
   --operation copy \
   --source-bucket statfungen \
   --source-prefix ftp_fgc_xqtl/20250218_ADSP_LD_matrix_APOEblocks_merge \
@@ -77,7 +77,7 @@ ftp_fgc_xqtl/resource/20240409_ADSP_LD_matrix/20250218_ADSP_LD_matrix_APOEblocks
 Copy all versions from `ftp_fgc_xqtl/20250218_ADSP_LD_matrix_APOEblocks_merge` directly into `ftp_fgc_xqtl/resource/20240409_ADSP_LD_matrix` while preserving subfolder structure:
 
 ```bash
-python s3-version-copy.py \
+python version-aware-cleanup.py \
   --operation copy \
   --source-bucket statfungen \
   --source-prefix ftp_fgc_xqtl/20250218_ADSP_LD_matrix_APOEblocks_merge \
@@ -99,7 +99,7 @@ If the source had subfolders like `ftp_fgc_xqtl/20250218_ADSP_LD_matrix_APOEbloc
 Move all versions and merge into destination:
 
 ```bash
-python s3-version-copy.py \
+python version-aware-cleanup.py \
   --operation move \
   --source-bucket statfungen \
   --source-prefix ftp_fgc_xqtl/old_data \
@@ -112,7 +112,7 @@ python s3-version-copy.py \
 Delete all versions under a given prefix:
 
 ```bash
-python s3-version-copy.py \
+python version-aware-cleanup.py \
   --operation delete \
   --source-bucket statfungen \
   --source-prefix ftp_fgc_xqtl/temp_data
