@@ -4,6 +4,7 @@
 """
 S3 Versioned Operations Tool - Manages all versions of objects in S3 buckets.
 Supports copy, move, and delete operations with proper version handling.
+Handles large files using multipart upload and quits on first error.
 """
 
 import boto3
@@ -14,6 +15,8 @@ from botocore.exceptions import ClientError
 
 # Initialize S3 client
 s3 = boto3.client('s3')
+# Max size for direct copy (5GB)
+MAX_DIRECT_COPY_SIZE = 5 * 1024 * 1024 * 1024
 
 class S3VersionedOps:
     """Class to handle versioned S3 operations."""
@@ -51,7 +54,11 @@ class S3VersionedOps:
         """Create an empty marker object for a folder."""
         prefix = S3VersionedOps.strip_slashes(prefix) + '/'
         print(f"Creating folder marker: {prefix}")
-        s3.put_object(Bucket=bucket, Key=prefix, Body='')
+        try:
+            s3.put_object(Bucket=bucket, Key=prefix, Body='')
+        except ClientError as e:
+            print(f"Error creating folder marker '{prefix}': {e}")
+            sys.exit(1)
     
     @staticmethod
     def list_versions(bucket, prefix):
@@ -65,7 +72,8 @@ class S3VersionedOps:
                 for v in page.get('Versions', []):
                     versions.append({
                         'Key': v['Key'],
-                        'VersionId': v['VersionId']
+                        'VersionId': v['VersionId'],
+                        'Size': v.get('Size', 0)
                     })
         except ClientError as e:
             print(f"Error accessing bucket '{bucket}': {e}")
@@ -77,6 +85,120 @@ class S3VersionedOps:
             sys.exit(1)
             
         return versions
+
+    def multipart_copy(self, source_bucket, source_key, source_version_id, 
+                       dest_bucket, dest_key):
+        """
+        Copy a large object using multipart upload.
+        This handles objects larger than 5GB which can't be copied directly.
+        """
+        print(f"Large file detected, using multipart copy for {source_key}...")
+        
+        # Get object metadata to check size
+        try:
+            response = s3.head_object(
+                Bucket=source_bucket, 
+                Key=source_key,
+                VersionId=source_version_id
+            )
+            size = response['ContentLength']
+        except ClientError as e:
+            print(f"Error getting object metadata: {e}")
+            sys.exit(1)
+        
+        # Initiate multipart upload
+        try:
+            mpu = s3.create_multipart_upload(Bucket=dest_bucket, Key=dest_key)
+            upload_id = mpu['UploadId']
+        except ClientError as e:
+            print(f"Error initiating multipart upload: {e}")
+            sys.exit(1)
+        
+        # Calculate part size (10MB minimum)
+        part_size = max(10 * 1024 * 1024, (size // 10000) + 1)
+        
+        # Copy parts
+        parts = []
+        part_number = 1
+        
+        for offset in range(0, size, part_size):
+            last_byte = min(offset + part_size - 1, size - 1)
+            range_string = f"bytes={offset}-{last_byte}"
+            
+            print(f"  Copying part {part_number} ({range_string})...")
+            
+            try:
+                part = s3.upload_part_copy(
+                    Bucket=dest_bucket,
+                    Key=dest_key,
+                    UploadId=upload_id,
+                    CopySource={
+                        'Bucket': source_bucket,
+                        'Key': source_key,
+                        'VersionId': source_version_id
+                    },
+                    CopySourceRange=range_string,
+                    PartNumber=part_number
+                )
+                
+                parts.append({
+                    'PartNumber': part_number,
+                    'ETag': part['CopyPartResult']['ETag']
+                })
+                
+                part_number += 1
+            except ClientError as e:
+                print(f"Error copying part {part_number}: {e}")
+                # Abort the multipart upload
+                s3.abort_multipart_upload(
+                    Bucket=dest_bucket,
+                    Key=dest_key,
+                    UploadId=upload_id
+                )
+                sys.exit(1)
+        
+        # Complete the multipart upload
+        try:
+            s3.complete_multipart_upload(
+                Bucket=dest_bucket,
+                Key=dest_key,
+                UploadId=upload_id,
+                MultipartUpload={'Parts': parts}
+            )
+            print(f"Multipart copy completed successfully: {source_key} -> {dest_key}")
+        except ClientError as e:
+            print(f"Error completing multipart upload: {e}")
+            # Abort the multipart upload
+            s3.abort_multipart_upload(
+                Bucket=dest_bucket,
+                Key=dest_key,
+                UploadId=upload_id
+            )
+            sys.exit(1)
+    
+    def copy_object(self, source_bucket, source_key, source_version_id, source_size,
+                   dest_bucket, dest_key):
+        """Copy a single object with error handling and size check."""
+        # For large files, use multipart copy
+        if source_size > MAX_DIRECT_COPY_SIZE:
+            self.multipart_copy(source_bucket, source_key, source_version_id,
+                              dest_bucket, dest_key)
+        else:
+            # Standard copy for smaller objects
+            try:
+                print(f"Copying {source_key} (v:{source_version_id}) -> {dest_key}")
+                s3.copy_object(
+                    Bucket=dest_bucket, 
+                    Key=dest_key, 
+                    CopySource={
+                        'Bucket': source_bucket,
+                        'Key': source_key,
+                        'VersionId': source_version_id
+                    }
+                )
+            except ClientError as e:
+                print(f"Error copying {source_key}: {e}")
+                sys.exit(1)
     
     def copy(self, source_bucket, source_prefix, dest_bucket, dest_prefix, merge=False):
         """Copy all versioned objects from source to destination."""
@@ -90,11 +212,7 @@ class S3VersionedOps:
         
         # Create destination if needed
         if not self.check_prefix(dest_bucket, dest_prefix):
-            try:
-                self.create_folder(dest_bucket, dest_prefix)
-            except ClientError as e:
-                print(f"Error creating destination '{dest_prefix}': {e}")
-                sys.exit(1)
+            self.create_folder(dest_bucket, dest_prefix)
         
         versions = self.list_versions(source_bucket, source_prefix)
         source_base = os.path.basename(source_prefix)
@@ -104,11 +222,10 @@ class S3VersionedOps:
         if not merge and not dest_prefix.endswith('/' + source_base):
             full_dest_prefix = os.path.join(dest_prefix, source_base)
         
-        success_count = 0
-        error_count = 0
-        
         for v in versions:
             src_key = v['Key']
+            src_version_id = v['VersionId']
+            src_size = v.get('Size', 0)
             
             # Calculate destination key
             if src_key.startswith(source_prefix + '/'):
@@ -129,22 +246,21 @@ class S3VersionedOps:
             # Use forward slashes for S3
             dst_key = dst_key.replace('\\', '/')
             
-            copy_source = {
-                'Bucket': source_bucket,
-                'Key': src_key,
-                'VersionId': v['VersionId']
-            }
-            
-            try:
-                print(f"Copying {src_key} (v:{v['VersionId']}) -> {dst_key}")
-                s3.copy_object(Bucket=dest_bucket, Key=dst_key, CopySource=copy_source)
-                success_count += 1
-            except ClientError as e:
-                print(f"Error copying {src_key}: {e}")
-                error_count += 1
+            # Copy the object (exit on error)
+            self.copy_object(source_bucket, src_key, src_version_id, src_size,
+                           dest_bucket, dst_key)
         
-        print(f"Copy complete: {success_count} copied, {error_count} errors")
-        return error_count == 0
+        print(f"Copy operation completed successfully")
+        return True
+    
+    def delete_object(self, bucket, key, version_id):
+        """Delete a single object with error handling."""
+        try:
+            print(f"Deleting {key} (v:{version_id})")
+            s3.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
+        except ClientError as e:
+            print(f"Error deleting {key}: {e}")
+            sys.exit(1)
     
     def delete(self, bucket, prefix):
         """Delete all versioned objects under a prefix."""
@@ -156,30 +272,20 @@ class S3VersionedOps:
             sys.exit(1)
         
         versions = self.list_versions(bucket, prefix)
-        success_count = 0
-        error_count = 0
         
         for v in versions:
-            try:
-                print(f"Deleting {v['Key']} (v:{v['VersionId']})")
-                s3.delete_object(Bucket=bucket, Key=v['Key'], VersionId=v['VersionId'])
-                success_count += 1
-            except ClientError as e:
-                print(f"Error deleting {v['Key']}: {e}")
-                error_count += 1
+            self.delete_object(bucket, v['Key'], v['VersionId'])
         
-        print(f"Delete complete: {success_count} deleted, {error_count} errors")
-        return error_count == 0
+        print(f"Delete operation completed successfully")
+        return True
     
     def move(self, source_bucket, source_prefix, dest_bucket, dest_prefix, merge=False):
         """Move objects (copy and then delete if successful)."""
-        # Only delete if copy was successful
-        if self.copy(source_bucket, source_prefix, dest_bucket, dest_prefix, merge):
-            print("Copy phase successful. Starting delete phase...")
-            self.delete(source_bucket, source_prefix)
-        else:
-            print("Copy phase had errors. Skipping delete to avoid data loss.")
-            sys.exit(1)
+        # First copy everything
+        self.copy(source_bucket, source_prefix, dest_bucket, dest_prefix, merge)
+        # Then delete the source
+        print("Copy phase successful. Starting delete phase...")
+        self.delete(source_bucket, source_prefix)
 
 def parse_args():
     """Parse command line arguments."""
