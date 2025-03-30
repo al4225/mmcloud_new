@@ -19,7 +19,7 @@ import logging
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%y-%m %H:%M:%S'
+    datefmt='%m-%d %H:%M'
 )
 logger = logging.getLogger(__name__)
 
@@ -177,13 +177,16 @@ class S3DirectOps:
             return []
     
     def prepare_copy_args(self, metadata, content_type, content_disposition=None, 
-                         content_encoding=None, cache_control=None):
+                         content_encoding=None, cache_control=None, for_multipart=False):
         """Prepare common copy arguments."""
         copy_args = {
-            'MetadataDirective': 'REPLACE',
             'Metadata': metadata,
             'ContentType': content_type or 'binary/octet-stream'
         }
+        
+        # Add MetadataDirective only for copy_object operations, not for multipart
+        if not for_multipart:
+            copy_args['MetadataDirective'] = 'REPLACE'
         
         # Add optional parameters if they exist
         if content_disposition:
@@ -301,9 +304,9 @@ class S3DirectOps:
                 
             size = response['ContentLength']
             
-            # Start multipart upload with metadata
+            # Start multipart upload with metadata - use for_multipart=True to exclude MetadataDirective
             mpu_args = self.prepare_copy_args(
-                metadata, content_type, content_disposition, content_encoding, cache_control
+                metadata, content_type, content_disposition, content_encoding, cache_control, for_multipart=True
             )
             
             # Add bucket and key information
@@ -315,8 +318,25 @@ class S3DirectOps:
             mpu = s3.create_multipart_upload(**mpu_args)
             upload_id = mpu['UploadId']
             
-            # Calculate optimal part size (10MB minimum)
-            part_size = max(10 * 1024 * 1024, (size // 10000) + 1)
+            # Calculate optimal part size for maximum efficiency
+            # AWS S3 limits:
+            # - Minimum part size: 5MB (except the last part)
+            # - Maximum part size: 5GB
+            # - Maximum parts per upload: 10,000
+            # - Best practices suggest using larger parts for better throughput
+            
+            # Using 500MB as our target part size for large files
+            # This balances network efficiency with resilience
+            target_part_size = 500 * 1024 * 1024  # 500MB
+            
+            # Ensure we don't exceed the maximum number of parts (10,000)
+            min_part_size = max(5 * 1024 * 1024, size // 10000)  # At least 5MB
+            
+            # Choose the larger of our target size and the minimum required size
+            part_size = max(target_part_size, min_part_size)
+            
+            # Ensure part size is less than our direct copy threshold
+            part_size = min(part_size, MAX_DIRECT_COPY_SIZE - 1)
             
             try:
                 # Copy parts
