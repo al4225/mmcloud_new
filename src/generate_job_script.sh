@@ -165,6 +165,11 @@ echo "Available CPU cores: \$available_cores"
 echo "Available Memory: \$available_memory_gb GB"
 echo "Maximum parallel jobs: \$num_parallel_commands"
 
+# Randomly sleep between 0 to 120 seconds to avoid all jobs starting at the same time thus causing high I/O loading packages 
+sleep_time=\$(( \$(od -An -N2 -i /dev/urandom) % 121))
+echo "Sleeping \$sleep_time seconds to avoid high I/O traffic"
+sleep \$sleep_time
+
 # Initialize a flag to track command success, which can be changed in no_fail
 command_failed=0
 
