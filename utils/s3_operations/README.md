@@ -163,6 +163,7 @@ python s3-version-ops.py \
   --source-prefix ftp_fgc_xqtl/ROSMAP/test_bams \
   --dest-prefix ftp_fgc_xqtl/resource/toy_bam_data/rnaseq_bam \
   --pattern "*.bam"
+```
 
 ## Notes
 - The move operation performs a full versioned copy followed by deletion of all versions in the source.
