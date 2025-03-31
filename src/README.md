@@ -8,16 +8,16 @@ Here we assume that
 
 We use the command below to submit commands in `commands_to_submit.txt`.
 
+```bash
+echo sos run xqtl-pipeline/pipeline/cis_workhorse.ipynb susie_twas --name ROSMAP_eQTL --genoFile ../input//ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.1.bed --phenoFile eQTL/ROSMAP/DLPFC_Mic/analysis_ready/phenotype_preprocessing/Mic.log2cpm.region_list.txt eQTL/ROSMAP/DLPFC_Ast/analysis_ready/phenotype_preprocessing/Ast.log2cpm.region_list.txt eQTL/ROSMAP/DLPFC_Oli/analysis_ready/phenotype_preprocessing/Oli.log2cpm.region_list.txt eQTL/ROSMAP/DLPFC_OPC/analysis_ready/phenotype_preprocessing/OPC.log2cpm.region_list.txt eQTL/ROSMAP/DLPFC_Exc/analysis_ready/phenotype_preprocessing/Exc.log2cpm.region_list.txt eQTL/ROSMAP/DLPFC_Inh/analysis_ready/phenotype_preprocessing/Inh.log2cpm.region_list.txt  eQTL/ROSMAP/DLPFC/analysis_ready/phenotype_preprocessing/DLPFC_samples_list.rnaseqc.gene_tpm.low_expression_filtered.outlier_removed.tmm.expression.remove_duplicates.region_list.txt eQTL/ROSMAP/PCC/analysis_ready/phenotype_preprocessing/PCC_samples_list.rnaseqc.gene_tpm.low_expression_filtered.outlier_removed.tmm.expression.region_list.txt eQTL/ROSMAP/AC/analysis_ready/phenotype_preprocessing/AC_samples_list.rnaseqc.gene_tpm.low_expression_filtered.outlier_removed.tmm.expression.region_list.txt --covFile eQTL/ROSMAP/DLPFC_Mic/analysis_ready/covariate_preprocessing/Mic.log2cpm.Mic.rosmap_cov.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.snuc_pseudo_bulk.related.plink_qc.extracted.pca.projected.Marchenko_PC.gz eQTL/ROSMAP/DLPFC_Ast/analysis_ready/covariate_preprocessing/Ast.log2cpm.Ast.rosmap_cov.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.snuc_pseudo_bulk.related.plink_qc.extracted.pca.projected.Marchenko_PC.gz eQTL/ROSMAP/DLPFC_Oli/analysis_ready/covariate_preprocessing/Oli.log2cpm.Oli.rosmap_cov.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.snuc_pseudo_bulk.related.plink_qc.extracted.pca.projected.Marchenko_PC.gz eQTL/ROSMAP/DLPFC_OPC/analysis_ready/covariate_preprocessing/OPC.log2cpm.OPC.rosmap_cov.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.snuc_pseudo_bulk.related.plink_qc.extracted.pca.projected.Marchenko_PC.gz eQTL/ROSMAP/DLPFC_Exc/analysis_ready/covariate_preprocessing/Exc.log2cpm.Exc.rosmap_cov.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.snuc_pseudo_bulk.related.plink_qc.extracted.pca.projected.Marchenko_PC.gz eQTL/ROSMAP/DLPFC_Inh/analysis_ready/covariate_preprocessing/Inh.log2cpm.Inh.rosmap_cov.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.snuc_pseudo_bulk.related.plink_qc.extracted.pca.projected.Marchenko_PC.gz eQTL/ROSMAP/DLPFC/analysis_ready/covariate_preprocessing/DLPFC_samples_list.rnaseqc.gene_tpm.low_expression_filtered.outlier_removed.tmm.expression.ROSMAP_xqtl_complete_samples_covariates_sex_death_pmi_study_transpose.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.unrelated.plink_qc.prune.pca.Marchenko_PC.gz eQTL/ROSMAP/PCC/analysis_ready/covariate_preprocessing/PCC_samples_list.rnaseqc.gene_tpm.low_expression_filtered.outlier_removed.tmm.expression.ROSMAP_xqtl_complete_samples_covariates_sex_death_pmi_study_transpose.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.unrelated.plink_qc.prune.pca.Marchenko_PC.gz eQTL/ROSMAP/AC/analysis_ready/covariate_preprocessing/AC_samples_list.rnaseqc.gene_tpm.low_expression_filtered.outlier_removed.tmm.expression.ROSMAP_xqtl_complete_samples_covariates_sex_death_pmi_study_transpose.ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.unrelated.plink_qc.prune.pca.Marchenko_PC.gz --customized-cis-windows fungen-xqtl-analysis/resource/TADB_enhanced_cis.bed --phenotype-names Mic Ast Oli OPC Exc Inh DLPFC PCC AC --cwd ../output/ --region-name ENSG00000158869  --ld_reference_meta_file resource/ADSP_R4_EUR_LD/ld_meta_file.tsv > commands_to_submit.txt 
+```
+
 ### Example Batch Submission
 
 ```bash
 username=aw3600
 ./src/mm_interactive.sh \
- -o 3.82.198.55 \
- -g g-sidlpgb7oi9p48kxycpmn \
- -sg sg-02867677e76635b25 \
- -efs 10.1.10.210 \
- --job-script ./example/commands_to_submit.txt \
+ --job-script commands_to_submit.txt \
  --mount-packages \
  --job-size 100 \
  --mount "statfungen/ftp_fgc_xqtl:/home/$username/data,statfungen/ftp_fgc_xqtl/sos_cache/$username:/home/$username/.sos,statfungen/ftp_fgc_xqtl/analysis_result/finemapping_twas:/home/$username/output" \
@@ -25,15 +25,12 @@ username=aw3600
  --cwd "/home/$username/data" \
  --download "statfungen/ftp_fgc_xqtl/ROSMAP/genotype/analysis_ready/geno_by_chrom/:/home/$username/input/" \
  --download-include "ROSMAP_NIA_WGS.leftnorm.bcftools_qc.plink_qc.1.*" \
- --ebs-mount "/home/$username/input=60" \
+ --ebs-mount "/home/$username/input=5" \
  -jn example_job \
  --no-fail-fast  
 ```
 
 To explain the parameters,
-- `-o 3.82.198.55` is the Opcenter IP. This is where submitted jobs will be sent to and can be viewed from.
-- `-g g-sidlpgb7oi9p48kxycpmn` and `-sg sg-02867677e76635b25` are gateway ID and security group, respectively. You can ask your admin for these IDs. These help in the VM's networking.
-- `-efs 10.1.10.210` specifies the IP of the EFS used in order to access installed packages.
 - `--job-script ./example/commands_to_submit.txt` provides the actual commands we want to submit to the VM. Providing this specifies batch mode
 - `--oem-packages` and `--mount-packages` are two modes that specify how the user can use certain packages. The former allows the user to use shared packages, and the latter allow the user to use user-installed packages. One and only one can be used.
 - `-c 2` and `-m 16` specifies that the VM should have 2 CPU threads and 16GB of memory.
@@ -51,9 +48,6 @@ To test this for yourself without submitting the job, please add `--dryrun` to t
 ### Example Interactive submission
 ```bash
 ./src/mm_interactive.sh \
- -g g-sidlpgb7oi9p48kxycpmn \
- -sg sg-02867677e76635b25 \
- -efs 10.1.10.210 \
  --mount-packages \
  -jn TEST_ROCKEFELLER_oem_mount_packages \
  -ide juypter
