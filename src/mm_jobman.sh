@@ -599,6 +599,22 @@ determine_vm_policy() {
 }
 
 # # # Helper functions for batch jobs # # #
+# Determine batch job names
+determine_batch_job_name() {
+    local job_index=$1
+    
+    # Set default job_name if not provided by user
+    if [[ -z "$job_name" ]]; then
+        # Default batch job name is username with numeric suffix
+        job_name="${user}_${job_index}"
+    else
+        # If custom job name provided, append numeric suffix
+        job_name="${job_name}_${job_index}"
+    fi
+    
+    echo -e "${job_name}"
+}
+
 submit_each_line_with_float() {
     local script_file="$1"
 
@@ -655,6 +671,9 @@ submit_each_line_with_float() {
             --no-fail-parallel "${no_fail_parallel}" \
             --parallel-commands "${parallel_commands}"
 
+        # Set batch job name with numeric suffix
+        batch_job_name=$(determine_batch_job_name $((j+1)))
+
         # Submit the job and retrieve job ID
         # Execute or echo the full command
         # publish parameters is deliberately omiteed
@@ -675,7 +694,7 @@ submit_each_line_with_float() {
             --ide "batch" \
             --env-parameters "${env_parameters// /;}" \
             --extra-parameters "${extra_parameters// /;}" \
-            --job-name "${job_name}_${j}"
+            --job-name "${batch_job_name}"
 
         rm -rf "${TMPDIR:-/tmp}/${script_file%.*}"
     done
