@@ -40,6 +40,7 @@ password=""
 vm_policy=""
 extra_parameters=""
 parallel_commands_given=""
+migratePolicy=""
 
 # Batch-specific optional values
 job_script=""
@@ -692,6 +693,7 @@ submit_each_line_with_float() {
             --job-script "${job_filename}" \
             --dryrun "${dryrun}" \
             --ide "batch" \
+            --verbose \
             --env-parameters "${env_parameters// /;}" \
             --extra-parameters "${extra_parameters// /;}" \
             --job-name "${batch_job_name}"
@@ -817,6 +819,7 @@ submit_interactive_job() {
         --rootVolSize "${root_vol_size}" \
         --host-script "${host_script}" \
         --job-script "${script_dir}/bind_mount.sh" \
+        --migratePolicy "[disable=true,evadeOOM=false]" \
         --dryrun "${dryrun}" \
         --env-parameters "${env_parameters// /;}" \
         --extra-parameters "${extra_parameters// /;}" \
