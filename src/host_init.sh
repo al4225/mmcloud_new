@@ -88,7 +88,7 @@ make_directories() {
     )
 
     for new_FILE in "${new_FILES[@]}"; do
-        create_dir "${main_DIR}" "${new_FILE}"
+        create_file "${main_DIR}" "${new_FILE}"
     done
 }
 
