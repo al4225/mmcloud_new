@@ -25,17 +25,20 @@ link_paths() {
     # other config files
     ln -s "${efs_path}/.config" "${local_path}/.config"
 
+    # Software folders
+    ln -s "${efs_path}/.pixi" "${local_path}/.pixi"
+    ln -s "${efs_path}/micromamba" "${local_path}/micromamba"
+
     # Only link these directories when not in oem_packages mode
     if [[ ${MODE} != "oem_packages" ]]; then
-        # Software folders
-        ln -s "${efs_path}/.pixi" "${local_path}/.pixi"
-        ln -s "${efs_path}/micromamba" "${local_path}/micromamba"
-
         # Ipython folder
         ln -s "${efs_path}/.ipython" "${local_path}/.ipython"
 
         # Cache
         ln -s "${efs_path}/.cache" "${local_path}/.cache"
+
+        # Git repositories
+        ln -s "${efs_path}/ghq" "${local_path}/ghq"
 
         # After installing pixi, it adds the local dir to the PATH through the .bashrc
         # Because we do not want multiple $HOME to front of PATH
@@ -55,11 +58,6 @@ if [ -f "\$HOME/.bashrc" ]; then
 fi
 fi
 EOF
-    fi
-
-    if [[ ${MODE} != "oem_packages" ]]; then
-        # Git repositories
-        ln -s "${efs_path}/ghq" "${local_path}/ghq"
     fi
 
     # ln -s ${efs_path}/.mamba ${local_path}/.mamba
