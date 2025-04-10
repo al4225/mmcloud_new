@@ -1,4 +1,4 @@
-name: Push containers to registries
+name: Dispatch push containers to registries
 
 on:
   workflow_dispatch:
