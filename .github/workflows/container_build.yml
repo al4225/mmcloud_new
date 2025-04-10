@@ -1,0 +1,32 @@
+name: Build containers
+
+on:
+  pull_request:
+    paths:
+      - 'docker/Dockerfile'
+      - 'docker/entrypoint.sh'
+
+jobs:
+  docker_container:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+
+    steps:
+      - name: Checkout pull request branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+
+      - name: Setup up docker buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build docker containers
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          tags: tmate-minimal:latest
+          outputs: type=image,compression=zstd
