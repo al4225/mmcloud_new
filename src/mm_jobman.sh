@@ -50,6 +50,7 @@ min_cores_per_command=0
 min_mem_per_command=0
 no_fail="|| { command_failed=1; break; }"
 no_fail_parallel="--halt now,fail=1"
+declare -a job_script_args=()
 declare -a download_local=()
 declare -a download_remote=()
 declare -a download_include=()
@@ -615,6 +616,47 @@ determine_batch_job_name() {
     echo -e "${job_name}"
 }
 
+generate_job_script_args() {
+    job_script_args=(
+        "--cwd" "${cwd}"
+        "--min-cores-per-command" "${min_cores_per_command}"
+        "--min-mem-per-command" "${min_mem_per_command}"
+        "--no-fail" "${no_fail}"
+        "--no-fail-parallel" "${no_fail_parallel}"
+        "--parallel-commands" "${parallel_commands}"
+    )
+
+    if (( ${#download_local[@]} )); then
+        job_script_args+=(
+            "--download-local" "$(echo "${download_local[@]}" | tr ' ' ';')"
+        )
+    fi
+
+    if (( ${#download_include[@]} )); then
+        job_script_args+=(
+            "--download-include" "$(echo "${download_include[@]}" | tr ' ' ';')"
+        )
+    fi
+
+    if (( ${#upload_local[@]} )); then
+        job_script_args+=(
+            "--upload-local" "$(echo "${upload_local[@]}" | tr ' ' ';')"
+        )
+    fi
+
+    if (( ${#download_remote[@]} )); then
+        job_script_args+=(
+            "--download-remote" "$(echo "${download_remote[@]}" | tr ' ' ';')"
+        )
+    fi
+
+    if (( ${#upload_remote[@]} )); then
+        job_script_args+=(
+            "--upload-remote" "$(echo "${upload_remote[@]}" | tr ' ' ';')"
+        )
+    fi
+}
+
 submit_each_line_with_float() {
     local script_file="$1"
 
@@ -654,22 +696,15 @@ submit_each_line_with_float() {
         # Begin jobs script with bind_mount.sh
         cat "$script_dir/bind_mount.sh" > "${job_filename}"
 
-        "${script_dir}/generate_job_script.sh" \
-            --script_file "${script_file}" \
-            --start "${start}" \
-            --end "${end}" \
-            --cwd "${cwd}" \
-            --download-local "$(echo "${download_local[@]}" | tr ' ' ';')" \
-            --upload-local "$(echo "${upload_local[@]}" | tr ' ' ';')" \
-            --download-remote "$(echo "${download_remote[@]}" | tr ' ' ';')" \
-            --download-include "$(echo "${download_include[@]}" | tr ' ' ';')" \
-            --upload-remote "$(echo "${upload_remote[@]}" | tr ' ' ';')" \
-            --job-filename "${job_filename}" \
-            --min-cores-per-command "${min_cores_per_command}" \
-            --min-mem-per-command "${min_mem_per_command}" \
-            --no-fail "${no_fail}" \
-            --no-fail-parallel "${no_fail_parallel}" \
-            --parallel-commands "${parallel_commands}"
+        generate_job_script_args
+        job_script_args+=(
+            "--script_file" "${script_file}"
+            "--start" "${start}"
+            "--end" "${end}"
+            "--job-filename" "${job_filename}"
+        )
+
+        "${script_dir}/generate_job_script.sh" "${job_script_args[@]}"
 
         # Set batch job name with numeric suffix
         batch_job_name=$(determine_batch_job_name $((j+1)))
@@ -817,6 +852,7 @@ submit_interactive_job() {
         --rootVolSize "${root_vol_size}" \
         --host-script "${host_script}" \
         --job-script "${script_dir}/bind_mount.sh" \
+        --migratePolicy "[disable=true,evadeOOM=false]" \
         --dryrun "${dryrun}" \
         --env-parameters "${env_parameters// /;}" \
         --extra-parameters "${extra_parameters// /;}" \

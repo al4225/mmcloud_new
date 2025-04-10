@@ -80,6 +80,7 @@ root_vol_size=""
 publish=""
 dataVolumeOption=""
 verbose=""
+migratePolicy=""
 declare -a float_args=()
 
 while (( "$#" )); do
@@ -102,6 +103,7 @@ while (( "$#" )); do
         --host-script) host_script="$2"; shift 2;;
         --job-script) job_script="$2"; shift 2;;
         # Miscellaneous parameters
+        --migratePolicy) migratePolicy="$2"; shift 2;;
         --dryrun) dryrun="$2"; shift 2;;
         --extra-parameters) extra_parameters="${2//;/ }"; shift 2;;
         --env-parameters) env_parameters="${2//;/ }"; shift 2;;
@@ -117,7 +119,6 @@ float_args+=(
     "-i" "$image" "-c" "$core" "-m" "$mem"
     "--vmPolicy" "$vm_policy"
     "--securityGroup" "$securityGroup"
-    "--migratePolicy" "[disable=true,evadeOOM=false]"
     "--withRoot"
     "--allowList" "[r5*,r6*,r7*,m*]"
     "-j" "$job_script"
@@ -138,6 +139,12 @@ fi
 if [[ -n  "${root_vol_size}" ]]; then
     float_args+=(
         "--rootVolSize" "${root_vol_size}"
+    )
+fi
+
+if [[ -n "${migratePolicy}" ]]; then
+    float_args+=(
+        "--migratePolicy" "${migratePolicy}"
     )
 fi
 
