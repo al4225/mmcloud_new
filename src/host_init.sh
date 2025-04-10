@@ -132,7 +132,7 @@ from dateutil.parser import isoparse
 # Configuration variables
 
 # Docker image name
-docker_image_name = "quay.io/danielnachun/tmate-minimal"
+docker_image_name = "ghcr.io/statfungen/tmate-minimal"
 
 # Paths and filenames
 job_id=str(os.getenv("FLOAT_JOB_ID"))
