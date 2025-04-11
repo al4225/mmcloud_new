@@ -45,7 +45,7 @@ parallel_commands_given=""
 job_script=""
 job_size=""
 cwd="~"
-parallel_commands=""
+parallel_commands=0
 min_cores_per_command=0
 min_mem_per_command=0
 no_fail="|| { command_failed=1; break; }"
