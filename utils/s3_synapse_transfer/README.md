@@ -80,8 +80,16 @@ A Python script for moving files in a folder to a subdirectory within this folde
 
 ## Usage
 
+```
+python synapse_move_files.py --synid SYN123456 --bucket my-bucket --path data/files/ \
+                     --token-file token.txt [options]
+```
+
 ## Example
-### Move all files to the eQTL subfolder
+1. Not designded for moving a single file, you can do it manually on the interface.
+
+2. Move multiple files
+### Original behavior (transfer all files to the subfolder)
 ```
 python synapse_move_files.py --synid syn123456 --token-file token.txt
 ```
@@ -99,3 +107,8 @@ python synapse_move_files.py --synid syn123456 --token-file token.txt --subfolde
 ```
 python synapse_move_files.py --synid syn123456 --token-file token.txt --verbose
 ```
+
+
+## Note
+- The synapse id in commands is for the folder that contains files to move and the subfolder instead of for the subfolder.
+- Don't need to manually create the subfolder. The script will create it if not exist.
