@@ -34,11 +34,11 @@ python s3_handler_to_synapse.py --synid syn12345678 --bucket my-data-bucket \
 ```
 ### Transfer only CSV and TXT files
 ```
-python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file synapse_token.txt --extensions csv txt --recursive
+python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file synapse_token.txt --patterns csv txt --recursive
 ```
 ### Transfer only XLSX files
 ```
-python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file synapse_token.txt --extensions xlsx
+python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file synapse_token.txt --patterns xlsx
 ```
 ### Original behavior (transfer all files)
 ```
@@ -61,7 +61,7 @@ python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/
 | `--path` | Path in S3 bucket (file or directory) |
 | `--token-file` | File containing Synapse authentication token |
 | `--recursive` | Process directories recursively |
-| `--extensions`| Specify file types to transfer(optional) |
+| `--patterns`| Specify file types to transfer(optional) |
 | `--skip-md5` | Skip MD5 hash calculation (faster) |
 | `--verbose` | Enable verbose logging |
 
@@ -96,7 +96,7 @@ python synapse_move_files.py --synid syn123456 --token-file token.txt
 
 ### Move only specific file types
 ```
-python synapse_move_files.py --synid syn123456 --token-file token.txt --extensions csv txt
+python synapse_move_files.py --synid syn123456 --token-file token.txt --patterns csv txt
 ```
 ### Specify a different subfolder name
 ```
