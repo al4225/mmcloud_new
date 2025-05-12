@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 
+## Usage
+# # Transfer only CSV and TXT files
+# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file token.txt --extensions csv txt --recursive
+
+# # Transfer only XLSX files
+# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file token.txt --extensions xlsx
+
+# # Original behavior (transfer all files)
+# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --recursive --token-file token.txt
+
 """
 S3-Synapse Transfer Tool
 A script for transferring files from S3 to Synapse using file handlers.
@@ -133,6 +143,41 @@ def store_file_in_synapse(syn, parent_id, file_handle_id, filename):
         logger.error(f"Error storing file in Synapse: {e}")
         return None
 
+def find_specific_files(bucket, s3_path, extensions, recursive=False):
+    """
+    Find files with specific extensions in the S3 bucket path
+    
+    Args:
+        bucket (str): S3 bucket name
+        s3_path (str): Path in S3 bucket
+        extensions (list): List of file extensions to filter by (e.g., ['.csv', '.txt'])
+        recursive (bool): Whether to process directories recursively
+        
+    Returns:
+        list: List of keys matching the specified extensions
+    """
+    # Normalize extensions to lowercase and ensure they start with a dot
+    normalized_extensions = []
+    for ext in extensions:
+        if not ext.startswith('.'):
+            ext = '.' + ext
+        normalized_extensions.append(ext.lower())
+    
+    logger.info(f"Searching for files with extensions: {normalized_extensions}")
+    
+    # Get all files
+    all_files = process_s3_path(bucket, s3_path, recursive)
+    
+    # Filter by extension
+    filtered_files = []
+    for file_key in all_files:
+        file_ext = os.path.splitext(file_key)[1].lower()
+        if file_ext in normalized_extensions:
+            filtered_files.append(file_key)
+    
+    logger.info(f"Found {len(filtered_files)} files with specified extensions")
+    return filtered_files
+
 def process_s3_path(bucket, s3_path, recursive=False):
     """Process S3 path and return list of keys to transfer"""
     try:
@@ -171,10 +216,13 @@ def process_s3_path(bucket, s3_path, recursive=False):
         logger.error(f"Error processing S3 path: {e}")
         return []
 
-def transfer_s3_to_synapse(syn, bucket, s3_path, synapse_id, recursive=False, calculate_hashes=True):
+def transfer_s3_to_synapse(syn, bucket, s3_path, synapse_id, recursive=False, calculate_hashes=True, extensions=None):
     """Transfer files from S3 to Synapse"""
     # Get list of files to transfer
-    keys = process_s3_path(bucket, s3_path, recursive)
+    if extensions:
+        keys = find_specific_files(bucket, s3_path, extensions, recursive)
+    else:
+        keys = process_s3_path(bucket, s3_path, recursive)
     
     if not keys:
         logger.error("No files found to transfer")
@@ -240,6 +288,8 @@ def main():
                         help="Process directories recursively")
     parser.add_argument("--skip-md5", action="store_true",
                         help="Skip MD5 hash calculation (faster)")
+    parser.add_argument("--extensions", nargs='+',
+                        help="List of file extensions to transfer (e.g., csv txt)")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
     
@@ -265,7 +315,8 @@ def main():
             args.path, 
             args.synid, 
             args.recursive,
-            not args.skip_md5
+            not args.skip_md5,
+            args.extensions
         )
         
         end_time = time.time()
