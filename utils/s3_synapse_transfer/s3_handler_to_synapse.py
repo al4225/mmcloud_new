@@ -2,10 +2,13 @@
 
 ## Usage
 # # Transfer only CSV and TXT files
-# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file token.txt --extensions csv txt --recursive
+# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file token.txt --patterns .csv .txt --recursive
 
 # # Transfer only XLSX files
-# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file token.txt --extensions xlsx
+# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file token.txt --patterns .xlsx
+
+# # Transfer files with specific patterns
+# python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --token-file token.txt --patterns cis_qtl.pairs.tsv.gz --recursive
 
 # # Original behavior (transfer all files)
 # python3 s3_synapse_transfer.py --synid syn123456 --bucket my-bucket --path data/ --recursive --token-file token.txt
@@ -21,6 +24,8 @@ import json
 import argparse
 import hashlib
 import logging
+import re
+import time
 from pathlib import Path
 
 import synapseclient
@@ -92,7 +97,9 @@ def guess_content_type(filename):
         '.png': 'image/png',
         '.gif': 'image/gif',
         '.xls': 'application/vnd.ms-excel',
-        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.gz': 'application/gzip',
+        '.zip': 'application/zip'
     }
     return content_types.get(ext, 'application/octet-stream')
 
@@ -143,39 +150,56 @@ def store_file_in_synapse(syn, parent_id, file_handle_id, filename):
         logger.error(f"Error storing file in Synapse: {e}")
         return None
 
-def find_specific_files(bucket, s3_path, extensions, recursive=False):
+def find_files_by_pattern(bucket, s3_path, patterns, recursive=False):
     """
-    Find files with specific extensions in the S3 bucket path
+    Find files matching specific patterns in the S3 bucket path
     
     Args:
         bucket (str): S3 bucket name
         s3_path (str): Path in S3 bucket
-        extensions (list): List of file extensions to filter by (e.g., ['.csv', '.txt'])
+        patterns (list): List of patterns to match (e.g., ['cis_qtl.pairs.tsv.gz', '.csv'])
         recursive (bool): Whether to process directories recursively
         
     Returns:
-        list: List of keys matching the specified extensions
+        list: List of keys matching the specified patterns
     """
-    # Normalize extensions to lowercase and ensure they start with a dot
-    normalized_extensions = []
-    for ext in extensions:
-        if not ext.startswith('.'):
-            ext = '.' + ext
-        normalized_extensions.append(ext.lower())
-    
-    logger.info(f"Searching for files with extensions: {normalized_extensions}")
+    logger.info(f"Searching for files with patterns: {patterns}")
     
     # Get all files
     all_files = process_s3_path(bucket, s3_path, recursive)
     
-    # Filter by extension
+    # Prepare patterns - simple extensions (with dot) or regex patterns for complex matches
+    regex_patterns = []
+    simple_extensions = []
+    
+    for pattern in patterns:
+        if pattern.startswith('.') and pattern.count('.') == 1 and all(c.isalnum() or c == '.' for c in pattern):
+            # Simple extension like '.csv'
+            simple_extensions.append(pattern.lower())
+        else:
+            # Convert pattern to regex that matches at the end of the filename
+            if not pattern.startswith('.'):
+                pattern = pattern
+            regex_patterns.append(re.compile(f"{re.escape(pattern)}$"))
+    
+    # Filter by patterns
     filtered_files = []
     for file_key in all_files:
-        file_ext = os.path.splitext(file_key)[1].lower()
-        if file_ext in normalized_extensions:
+        filename = os.path.basename(file_key)
+        
+        # Check simple extensions
+        file_ext = os.path.splitext(filename)[1].lower()
+        if file_ext in simple_extensions:
             filtered_files.append(file_key)
+            continue
+            
+        # Check regex patterns
+        for pattern in regex_patterns:
+            if pattern.search(filename):
+                filtered_files.append(file_key)
+                break
     
-    logger.info(f"Found {len(filtered_files)} files with specified extensions")
+    logger.info(f"Found {len(filtered_files)} files matching specified patterns")
     return filtered_files
 
 def process_s3_path(bucket, s3_path, recursive=False):
@@ -216,11 +240,11 @@ def process_s3_path(bucket, s3_path, recursive=False):
         logger.error(f"Error processing S3 path: {e}")
         return []
 
-def transfer_s3_to_synapse(syn, bucket, s3_path, synapse_id, recursive=False, calculate_hashes=True, extensions=None):
+def transfer_s3_to_synapse(syn, bucket, s3_path, synapse_id, recursive=False, calculate_hashes=True, patterns=None):
     """Transfer files from S3 to Synapse"""
     # Get list of files to transfer
-    if extensions:
-        keys = find_specific_files(bucket, s3_path, extensions, recursive)
+    if patterns:
+        keys = find_files_by_pattern(bucket, s3_path, patterns, recursive)
     else:
         keys = process_s3_path(bucket, s3_path, recursive)
     
@@ -288,8 +312,8 @@ def main():
                         help="Process directories recursively")
     parser.add_argument("--skip-md5", action="store_true",
                         help="Skip MD5 hash calculation (faster)")
-    parser.add_argument("--extensions", nargs='+',
-                        help="List of file extensions to transfer (e.g., csv txt)")
+    parser.add_argument("--patterns", nargs='+',
+                        help="List of filename patterns to match (e.g., '.csv', 'cis_qtl.pairs.tsv.gz')")
     parser.add_argument("--verbose", action="store_true",
                         help="Enable verbose logging")
     
@@ -316,7 +340,7 @@ def main():
             args.synid, 
             args.recursive,
             not args.skip_md5,
-            args.extensions
+            args.patterns
         )
         
         end_time = time.time()
@@ -327,5 +351,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    import time
     main()
