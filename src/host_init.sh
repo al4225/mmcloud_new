@@ -62,6 +62,11 @@ make_directories() {
         sudo chgrp -R users "${main_DIR}"
     fi
 
+    # Make sure main_DIR is not owned by root
+    sudo chown mmc "${main_DIR}"
+    sudo chmod 777 "${main_DIR}"
+    sudo chgrp users "${main_DIR}"
+
     # ".conda"
     # ".mamba"
     new_DIRS=(
