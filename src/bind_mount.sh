@@ -27,7 +27,7 @@ link_paths() {
 
     # Software folders
     ln -s "${efs_path}/.pixi" "${local_path}/.pixi"
-    ln -s "${efs_path}/micromamba" "${local_path}/micromamba"
+    # ln -s "${efs_path}/micromamba" "${local_path}/micromamba"
 
     # Only link these directories when not in oem_packages mode
     if [[ ${MODE} != "oem_packages" ]]; then
@@ -71,7 +71,7 @@ set_paths() {
     # Create a PATH script - does not need to be saved in EFS
     # (new every time for easy editing)
     tee "${HOME}/.set_paths" << EOF
-export PATH="${efs_path}/.pixi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="${HOME}/bin:${efs_path}/.pixi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EOF
 
     source "${efs_path}/.bashrc"
@@ -95,7 +95,7 @@ fi
 
 # Run entrypoint if given
 if [[ -n "$ENTRYPOINT" ]]; then
-    curl -fsSL "${ENTRYPOINT}" | bash
+  curl -fsSL "${ENTRYPOINT}" | bash
 else
 # Else run original VMUI check
   is_available() {
