@@ -71,7 +71,7 @@ set_paths() {
     # Create a PATH script - does not need to be saved in EFS
     # (new every time for easy editing)
     tee "${HOME}/.set_paths" << EOF
-export PATH="${efs_path}/.pixi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH="${HOME}/bin:${efs_path}/.pixi/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EOF
 
     source "${efs_path}/.bashrc"

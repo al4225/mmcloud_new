@@ -4,14 +4,11 @@ cd /root
 MODE=${MODE:-""}
 EFS=${EFS:-""}
 
-cd /root
-
 # Install aws
 alias aws="/usr/local/aws-cli/v2/current/bin/aws"
 export PATH="/usr/local/bin:/usr/bin:/usr/local/sbin:/usr/sbin:${PATH}"
 
 # EFS
-yum install fuse gcc python3 bash nfs-utils --quiet -y
 sudo mkdir -p /mnt/efs
 sudo chmod 777 /mnt/efs
 if [[ ${MODE} == "oem_packages" ]]; then
@@ -30,9 +27,9 @@ create_dir() {
     
     if [ ! -d "${main_DIR}/${new_DIR}" ]; then
         sudo mkdir -p "${main_DIR}/${new_DIR}"
-        sudo chown -R mmc "${main_DIR}/${new_DIR}"
-        sudo chmod -R 777 "${main_DIR}/${new_DIR}"
+        sudo chown -R ubuntu "${main_DIR}/${new_DIR}"
         sudo chgrp -R users "${main_DIR}/${new_DIR}"
+        sudo chmod -R g=u "${main_DIR}/${new_DIR}"
     fi
 }
 
@@ -42,9 +39,9 @@ create_file() {
     
     if [ ! -f "${main_DIR}/${new_FILE}" ]; then
         sudo touch "${main_DIR}/${new_FILE}"
-        sudo chown mmc "${main_DIR}/${new_FILE}"
-        sudo chmod 777 "${main_DIR}/${new_FILE}"
+        sudo chown ubuntu "${main_DIR}/${new_FILE}"
         sudo chgrp users "${main_DIR}/${new_FILE}"
+        sudo chmod g=u "${main_DIR}/${new_FILE}"
     fi
 }
 
@@ -57,15 +54,15 @@ make_directories() {
 
     if [ ! -d "${main_DIR}/" ]; then
         sudo mkdir -p "${main_DIR}"
-        sudo chown -R mmc "${main_DIR}"
-        sudo chmod -R 777 "${main_DIR}"
+        sudo chown -R ubuntu "${main_DIR}"
         sudo chgrp -R users "${main_DIR}"
+        sudo chmod -R g=u "${main_DIR}"
     fi
 
     # Make sure main_DIR is not owned by root
-    sudo chown mmc "${main_DIR}"
-    sudo chmod 777 "${main_DIR}"
+    sudo chown ubuntu "${main_DIR}"
     sudo chgrp users "${main_DIR}"
+    sudo chmod g=u "${main_DIR}"
 
     # ".conda"
     # ".mamba"
