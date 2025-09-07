@@ -95,7 +95,11 @@ fi
 
 # Run entrypoint if given
 if [[ -n "$ENTRYPOINT" ]]; then
-    curl -fsSL "${ENTRYPOINT}" | bash
+    if [[ -f "$ENTRYPOINT" ]]; then
+        bash "$ENTRYPOINT"
+    else
+        curl -fsSL "${ENTRYPOINT}" | bash
+    fi
 else
 # Else run original VMUI check
   is_available() {
