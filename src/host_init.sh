@@ -110,8 +110,7 @@ make_directories "/mnt/efs/${FLOAT_USER}"
 ######## SECTION ON JUPYTER SUSPENSION ########
 if [[ $SUSPEND_FEATURE == "true" ]] && { [[ $VMUI == "jupyter" ]] || [[ $VMUI == "jupyter-lab" ]]; }; then
     # Use nohup to run the Python script in the background
-    echo "Turning on Jupyter suspension feature..."
-
+    echo "Turning on Jupyter suspension feature allowing for limited idle time $ALLOWABLE_IDLE_TIME_SECONDS ..."
     # Use nohup to run the Python script in the background
     # Grabbing job id of the job
     job_id="${FLOAT_JOB_ID}"
