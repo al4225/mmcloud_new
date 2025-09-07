@@ -27,7 +27,7 @@ link_paths() {
 
     # Software folders
     ln -s "${efs_path}/.pixi" "${local_path}/.pixi"
-    ln -s "${efs_path}/micromamba" "${local_path}/micromamba"
+    # ln -s "${efs_path}/micromamba" "${local_path}/micromamba"
 
     # Only link these directories when not in oem_packages mode
     if [[ ${MODE} != "oem_packages" ]]; then
