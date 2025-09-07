@@ -108,7 +108,7 @@ make_directories "/mnt/efs/${FLOAT_USER}"
 # done
 
 ######## SECTION ON JUPYTER SUSPENSION ########
-if [[ $SUSPEND_FEATURE == "" ]] && { [[ $VMUI == "jupyter" ]] || [[ $VMUI == "jupyter-lab" ]]; }; then
+if [[ $SUSPEND_FEATURE == "true" ]] && { [[ $VMUI == "jupyter" ]] || [[ $VMUI == "jupyter-lab" ]]; }; then
     # Use nohup to run the Python script in the background
     echo "Turning on Jupyter suspension feature..."
 
@@ -736,4 +736,6 @@ if __name__ == "__main__":
     log_file.close()
 
 EOF
+else
+    echo "Auto-suspension is not available in the current interactive analysis session"
 fi

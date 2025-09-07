@@ -562,6 +562,8 @@ set_env_parameters() {
     # If it is populated, turn off suspension with an env variable
     if [[ "$suspend_off" == "true" ]]; then
         env_parameters_array+=("SUSPEND_FEATURE=false")
+    else
+        env_parameters_array+=("SUSPEND_FEATURE=true")
     fi
 
     for param in "${env_parameters_array[@]}"; do
