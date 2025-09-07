@@ -75,7 +75,7 @@ make_directories() {
         ".mamba"
         ".pixi"
         "ghq"
-        "micromamba"
+        # "micromamba"
     )
 
     for new_DIR in "${new_DIRS[@]}"; do
