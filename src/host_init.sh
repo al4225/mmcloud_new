@@ -27,7 +27,7 @@ create_dir() {
     
     if [ ! -d "${main_DIR}/${new_DIR}" ]; then
         sudo mkdir -p "${main_DIR}/${new_DIR}"
-        sudo chown -R ubuntu "${main_DIR}/${new_DIR}"
+        sudo chown -R 1000 "${main_DIR}/${new_DIR}"
         sudo chgrp -R users "${main_DIR}/${new_DIR}"
         sudo chmod -R g=u "${main_DIR}/${new_DIR}"
     fi
@@ -39,7 +39,7 @@ create_file() {
     
     if [ ! -f "${main_DIR}/${new_FILE}" ]; then
         sudo touch "${main_DIR}/${new_FILE}"
-        sudo chown ubuntu "${main_DIR}/${new_FILE}"
+        sudo chown 1000 "${main_DIR}/${new_FILE}"
         sudo chgrp users "${main_DIR}/${new_FILE}"
         sudo chmod g=u "${main_DIR}/${new_FILE}"
     fi
@@ -54,13 +54,13 @@ make_directories() {
 
     if [ ! -d "${main_DIR}/" ]; then
         sudo mkdir -p "${main_DIR}"
-        sudo chown -R ubuntu "${main_DIR}"
+        sudo chown -R 1000 "${main_DIR}"
         sudo chgrp -R users "${main_DIR}"
         sudo chmod -R g=u "${main_DIR}"
     fi
 
     # Make sure main_DIR is not owned by root
-    sudo chown ubuntu "${main_DIR}"
+    sudo chown 1000 "${main_DIR}"
     sudo chgrp users "${main_DIR}"
     sudo chmod g=u "${main_DIR}"
 
